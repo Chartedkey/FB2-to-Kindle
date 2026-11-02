@@ -659,13 +659,6 @@ def download_fbc(progress=None) -> Path:
     return target / "fbc.exe"
 
 
-def latest_app_release() -> tuple[str, str]:
-    """(версия, ссылка) последнего выпуска программы на GitHub."""
-    from . import REPO
-    info = json.loads(http_get(f"https://api.github.com/repos/{REPO}/releases/latest", accept="application/vnd.github+json"))
-    return info.get("tag_name", "").lstrip("v"), info.get("html_url", f"https://github.com/{REPO}/releases")
-
-
 def version_tuple(v: str) -> tuple:
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
 

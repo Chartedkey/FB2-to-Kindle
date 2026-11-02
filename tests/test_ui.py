@@ -152,6 +152,16 @@ def test_full_flow(env):
     shot(win, "09b-rescan-menu")
     lt.btn_rescan.menu().hide()
 
+    from fb2kindle import updater
+    from fb2kindle.ui.update_dialog import UpdateDialog
+    rel = updater.Release("2.1.0", "**Новое**\n- Обновление внутри программы\n- Новая иконка", "https://example.com",
+                          "https://example.com/a.zip", "FB2-Kindle-2.1.0-windows.zip", 56_000_000, "")
+    ud = UpdateDialog(rel, win)
+    ud.show()
+    wait(app, lambda: False, 0.3)
+    shot(ud, "10a-update-dialog")
+    ud.reject()
+
     dlg = AdvancedDialog(s, win)
     dlg.show()
     wait(app, lambda: False, 0.3)

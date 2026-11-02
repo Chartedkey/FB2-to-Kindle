@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import sys
 import threading
-import webbrowser
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QStyleFactory, QTabWidget
 
-from .. import __version__, core
+from .. import __version__, core, updater
 from .common import button, init_bridge, stylesheet, ui_call
 from .convert_tab import ConvertTab
+from .update_dialog import UpdateDialog
 from .library_tab import LibraryTab
 
 
@@ -127,33 +128,38 @@ class MainWindow(QMainWindow):
 
     def check_updates(self):
         self.btn_update.setEnabled(False)
+        self.btn_update.setText("Проверяю…")
 
         def work():
             try:
-                ver, url = core.latest_app_release()
-                err = ""
+                rel, err = updater.latest_release(), ""
             except Exception as e:  # noqa: BLE001
-                ver, url, err = "", "", str(e)
-            ui_call(lambda: self._updates_done(ver, url, err))
+                rel, err = None, str(e)
+            ui_call(lambda: self._updates_done(rel, err))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _updates_done(self, ver: str, url: str, err: str):
+    def _updates_done(self, rel, err: str):
         self.btn_update.setEnabled(True)
-        if err or not ver:
+        self.btn_update.setText("Проверить обновления")
+        if err or rel is None or not rel.version:
             QMessageBox.warning(self, core.APP_NAME, f"Не удалось проверить обновления.\n{err}")
             return
-        if core.version_tuple(ver) > core.version_tuple(__version__):
-            if QMessageBox.question(self, core.APP_NAME, f"Есть новая версия {ver} (у вас {__version__}).\n\n"
-                                    "Открыть страницу загрузки?") == QMessageBox.StandardButton.Yes:
-                webbrowser.open(url)
+        if updater.is_newer(rel):
+            UpdateDialog(rel, self).exec()
         else:
             QMessageBox.information(self, core.APP_NAME, f"У вас последняя версия ({__version__}).")
+
+    def quit_for_update(self):
+        """Закрыться, чтобы сценарий обновления мог заменить файлы."""
+        self._updating = True
+        self.close()
+        QApplication.instance().quit()
 
     # ----------------------------------------------------------------------- #
 
     def closeEvent(self, e):
-        if self.convert_tab.busy or self.library_tab.busy:
+        if not getattr(self, "_updating", False) and (self.convert_tab.busy or self.library_tab.busy):
             if QMessageBox.question(self, core.APP_NAME, "Конвертация ещё идёт. Остановить и выйти?") \
                     != QMessageBox.StandardButton.Yes:
                 e.ignore()
@@ -185,9 +191,29 @@ def main(argv=None) -> int:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Chartedkey.FB2Kindle")
         except Exception:
             pass
+    if "--apply-update" in argv:
+        # Проверка механизма обновления в автосборке: поставить версию из архива без окна
+        zip_path = Path(argv[argv.index("--apply-update") + 1])
+        new_dir = updater.unpack(zip_path)
+        updater.launch_replacer(new_dir, "test")
+        return 0
     app = create_app(argv)
     win = MainWindow()
     win.show()
+    if "--updated" in argv:
+        i = argv.index("--updated")
+        ver = argv[i + 1] if len(argv) > i + 1 else __version__
+        win.notify(f"Программа обновлена до версии {ver}", 15000)
+    if "--update-failed" in argv:
+        i = argv.index("--update-failed")
+        log = argv[i + 1] if len(argv) > i + 1 else ""
+        try:
+            details = Path(log).read_text(encoding="utf-8-sig")[-1500:]
+        except OSError:
+            details = ""
+        QTimer.singleShot(300, lambda: QMessageBox.warning(
+            win, core.APP_NAME, "Не удалось установить обновление — осталась прежняя версия.\n\n"
+            "Скачайте новую версию со страницы выпуска на GitHub.\n\n" + details))
     if "--screenshot" in argv:
         # Проверка сборки: открыть окно, сохранить снимок и выйти
         out = argv[argv.index("--screenshot") + 1]
