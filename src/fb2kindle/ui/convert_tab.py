@@ -52,6 +52,8 @@ class ConvertTab(QWidget):
             bar.addWidget(b)
         bar.addStretch(1)
         self.lbl_count = muted("")
+        self.lbl_count.setMinimumWidth(170)
+        self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         bar.addWidget(self.lbl_count)
         root.addLayout(bar)
 

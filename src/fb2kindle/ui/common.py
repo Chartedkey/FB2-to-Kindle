@@ -51,7 +51,8 @@ QLineEdit, QComboBox, QSpinBox { border: 1px solid #D1D1D1; border-radius: 6px; 
                                  selection-background-color: #005FB8; }
 QLineEdit:focus, QComboBox:focus { border: 1px solid #005FB8; }
 QLineEdit:read-only { background: #FAFAFA; color: #333333; }
-QComboBox::drop-down { border: none; width: 22px; }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox::down-arrow { image: url("%ARROW%"); width: 14px; height: 14px; }
 QComboBox QAbstractItemView { border: 1px solid #D1D1D1; background: #FFFFFF; selection-background-color: #E3EFFB;
                               selection-color: #1B1B1B; outline: 0; }
 QListWidget { border: none; background: transparent; outline: 0; }
@@ -82,6 +83,11 @@ QSplitter::handle { background: transparent; }
 QToolTip { background: #FFFFFF; color: #1B1B1B; border: 1px solid #D1D1D1; padding: 4px 6px; }
 QCheckBox { spacing: 8px; }
 """
+
+
+def stylesheet() -> str:
+    arrow = (core.RES_DIR / "assets" / "arrow-down.png").as_posix()
+    return QSS.replace("%ARROW%", arrow)
 
 
 class Bridge(QObject):

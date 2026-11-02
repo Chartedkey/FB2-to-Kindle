@@ -11,7 +11,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QStyleFactory, QTabWidget
 
 from .. import __version__, core
-from .common import QSS, button, init_bridge, ui_call
+from .common import button, init_bridge, stylesheet, ui_call
 from .convert_tab import ConvertTab
 from .library_tab import LibraryTab
 
@@ -172,7 +172,7 @@ def create_app(argv=None) -> QApplication:
     app.setApplicationName("FB2 Kindle")
     if "Fusion" in QStyleFactory.keys():
         app.setStyle("Fusion")
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(stylesheet())
     init_bridge()
     return app
 
