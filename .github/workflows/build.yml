@@ -62,6 +62,21 @@ jobs:
           if (-not (Test-Path $shot)) { throw "exe не запустился" }
           "{0:N1} МБ" -f ((Get-ChildItem -Recurse "dist/FB2 Kindle" | Measure-Object Length -Sum).Sum / 1MB)
 
+      - name: Самые большие файлы сборки
+        shell: pwsh
+        run: Get-ChildItem -Recurse "dist/FB2 Kindle" -File | Sort-Object Length -Descending | Select-Object -First 25 | ForEach-Object { "{0,8:N1} МБ  {1}" -f ($_.Length / 1MB), $_.FullName.Substring($PWD.Path.Length) }
+
+      - name: Снимки экрана в журнал
+        if: always() && !startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          Get-ChildItem screenshots/*.png | ForEach-Object {
+            "=====SHOT $($_.Name)"
+            $b = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+            for ($i = 0; $i -lt $b.Length; $i += 4000) { $b.Substring($i, [Math]::Min(4000, $b.Length - $i)) }
+            "=====END"
+          }
+
       - name: Архив
         shell: pwsh
         run: |

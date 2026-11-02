@@ -54,8 +54,9 @@ def _clean(extract: str) -> str:
 
 
 def _stem(word: str) -> str:
+    """Начало фамилии: «Мьевилль» и «Мьевиль», «Азимов» и «Азимова» совпадут."""
     w = word.lower().replace("ё", "е")
-    return w[: max(4, len(w) - 2)]
+    return w[: min(len(w), max(4, min(5, len(w) - 2)))]
 
 
 def _result(page: dict) -> dict:
@@ -84,8 +85,14 @@ def book_info(title: str, author_last: str) -> dict:
     """Описание книги или {} если не нашлось."""
     last = _stem(author_last) if author_last else ""
     t = re.sub(r"\W+", " ", title.lower().replace("ё", "е")).strip()
-    for query in (f"{title} {author_last} роман", f"{title} {author_last}"):
+    queries = [f"{title} {author_last} роман", f"{title} роман", f"{title} {author_last}", title] if author_last \
+        else [f"{title} роман", title]
+    seen = set()
+    for query in queries:
         for page in _search(query):
+            if page.get("pageid") in seen:
+                continue
+            seen.add(page.get("pageid"))
             ptitle = re.sub(r"\W+", " ", page.get("title", "").lower().replace("ё", "е"))
             text = (page.get("description", "") + " " + page.get("extract", "")).lower().replace("ё", "е")
             if t and t in ptitle and (not last or last in text):
