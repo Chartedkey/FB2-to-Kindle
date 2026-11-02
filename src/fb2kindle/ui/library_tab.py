@@ -386,7 +386,9 @@ class LibraryTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
+        inner.setMinimumWidth(240)
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(18, 18, 18, 18)
         lay.setSpacing(6)
@@ -405,9 +407,12 @@ class LibraryTab(QWidget):
         form.setVerticalSpacing(5)
         self.det_fields = {}
         for key, label in (("series", "Серия"), ("year", "Год"), ("genre", "Жанр"), ("fb2", "FB2"), ("kindle", "Kindle")):
-            v = QLabel("")
-            v.setWordWrap(True)
-            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            if key in ("fb2", "kindle"):
+                v = ElidedLabel("")      # длинные пути без пробелов не переносятся — обрезаем
+            else:
+                v = QLabel("")
+                v.setWordWrap(True)
+                v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(muted(label), v)
             self.det_fields[key] = v
         lay.addLayout(form)
@@ -421,12 +426,12 @@ class LibraryTab(QWidget):
         self.det_ann.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.det_ann)
         lay.addSpacing(10)
-        btns = QHBoxLayout()
+        btns = QVBoxLayout()
+        btns.setSpacing(6)
         self.det_action = button("Конвертировать", primary=True,
                                  slot=lambda: self.current_book and self.book_action(self.current_book, self.group_of[str(self.current_book.path)]))
         btns.addWidget(self.det_action)
-        btns.addWidget(button("Открыть папку FB2", slot=lambda: self.current_book and show_in_explorer(self.current_book.path)))
-        btns.addStretch(1)
+        btns.addWidget(button("Показать FB2 в папке", slot=lambda: self.current_book and show_in_explorer(self.current_book.path)))
         lay.addLayout(btns)
         lay.addStretch(1)
         scroll.setWidget(inner)
@@ -789,8 +794,10 @@ class LibraryTab(QWidget):
                 self.det_fields["kindle"].setText(str(out.relative_to(Path(self.s.kindle_root))))
             except ValueError:
                 self.det_fields["kindle"].setText(str(out))
+            self.det_fields["kindle"].setToolTip(str(out))
         elif st == "error":
             self.det_fields["kindle"].setText("ошибка: " + self.errors.get(str(b.path), ""))
+            self.det_fields["kindle"].setToolTip(self.errors.get(str(b.path), ""))
         else:
             self.det_fields["kindle"].setText({"queued": "в очереди", "run": "конвертируется…"}.get(st, "ещё не сконвертирована"))
         label, primary, enabled = action_for(st)

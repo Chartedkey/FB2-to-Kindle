@@ -36,6 +36,7 @@ jobs:
         run: python -m pytest -v tests --ignore=tests/test_wiki.py
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QPA_FONTDIR: C:\Windows\Fonts
 
       - name: Википедия (не блокирует сборку)
         continue-on-error: true
@@ -52,6 +53,7 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_QPA_FONTDIR: C:\Windows\Fonts
         run: |
           Copy-Item -Recurse fbc "dist/FB2 Kindle/fbc"
           Copy-Item assets/fb2cng-LICENSE.txt "dist/FB2 Kindle/fbc/LICENSE.txt"
