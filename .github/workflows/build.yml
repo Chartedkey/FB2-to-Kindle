@@ -57,7 +57,7 @@ jobs:
           Copy-Item -Recurse fbc "dist/FB2 Kindle/fbc"
           Copy-Item assets/fb2cng-LICENSE.txt "dist/FB2 Kindle/fbc/LICENSE.txt"
           New-Item -ItemType Directory -Force screenshots | Out-Null
-          $shot = Join-Path $PWD "screenshots/10-exe.png"
+          $shot = Join-Path $PWD "screenshots/11-exe.png"
           $p = Start-Process -FilePath "dist/FB2 Kindle/FB2 Kindle.exe" -ArgumentList "--screenshot", "`"$shot`"" -PassThru
           if (-not $p.WaitForExit(90000)) { $p.Kill(); throw "exe не завершился" }
           if (-not (Test-Path $shot)) { throw "exe не запустился" }

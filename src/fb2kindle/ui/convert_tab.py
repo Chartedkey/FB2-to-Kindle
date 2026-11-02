@@ -29,6 +29,7 @@ class ConvertTab(QWidget):
         self.main = main
         self.s: core.Settings = main.s
         self.books: list[core.Book] = []
+        self.source_dir: dict[str, str] = {}   # книга → название добавленной папки, из которой она взята
         self.jobs: list[core.Job] = []
         self.converter: core.Converter | None = None
         self.folder_touched = bool(self.s.folder_name)
@@ -205,18 +206,33 @@ class ConvertTab(QWidget):
             files = core.find_books(paths)
             known = {os.path.normcase(str(b.path.resolve())) for b in self.books}
             new = [core.read_metadata(f) for f in files if os.path.normcase(str(f.resolve())) not in known]
-            ui_call(lambda: self._on_added(new, len(files)))
+            dirs = {}
+            for raw in paths:
+                d = Path(raw)
+                if d.is_dir():
+                    for f in core.find_books([raw]):
+                        dirs.setdefault(str(f), d.name)
+            ui_call(lambda: self._on_added(new, len(files), dirs))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_added(self, new: list[core.Book], found: int):
+    def _on_added(self, new: list[core.Book], found: int, dirs: dict[str, str] | None = None):
         if not found:
             QMessageBox.information(self, core.APP_NAME, "Книг FB2 не найдено.")
         self.books.extend(new)
+        self.source_dir.update(dirs or {})
         self.jobs = []
         if not self.folder_touched:
-            self.ed_folder.setText(core.most_common_author(self.books))
+            self.ed_folder.setText(self.suggest_folder())
         self._rebuild()
+
+    def suggest_folder(self) -> str:
+        """Имя папки автора: из названия добавленной папки («Мьевилль Чайна» → «Чайна Мьевилль») или из книг."""
+        if self.s.author_from_folder and self.books:
+            names = {self.source_dir.get(str(b.path)) for b in self.books}
+            if len(names) == 1 and None not in names:
+                return core.folder_author(names.pop())[0]
+        return core.most_common_author(self.books)
 
     def remove_selected(self):
         if self.converter:
@@ -227,13 +243,14 @@ class ConvertTab(QWidget):
         self.books = [b for i, b in enumerate(self.books) if i not in rows]
         self.jobs = []
         if not self.folder_touched:
-            self.ed_folder.setText(core.most_common_author(self.books))
+            self.ed_folder.setText(self.suggest_folder())
         self._rebuild()
 
     def clear_list(self):
         if self.converter:
             return
         self.books, self.jobs = [], []
+        self.source_dir.clear()
         self.folder_touched = False
         self.ed_folder.setText("")
         self._rebuild()

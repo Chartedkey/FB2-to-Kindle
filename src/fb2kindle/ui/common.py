@@ -42,6 +42,14 @@ QPushButton { background: #FFFFFF; border: 1px solid #D1D1D1; border-radius: 6px
 QPushButton:hover { background: #F6F6F6; }
 QPushButton:pressed { background: #EDEDED; }
 QPushButton:disabled { color: #8A8A8A; background: #F7F7F7; border-color: #E0E0E0; }
+QToolButton { background: #FFFFFF; border: 1px solid #D1D1D1; border-radius: 6px; padding: 6px 10px; padding-right: 26px; }
+QToolButton:hover { background: #F6F6F6; }
+QToolButton:disabled { color: #8A8A8A; background: #F7F7F7; border-color: #E0E0E0; }
+QToolButton::menu-button { border: none; border-left: 1px solid #D1D1D1; width: 22px; }
+QToolButton::menu-arrow { image: url("%ARROW%"); width: 12px; height: 12px; }
+QMenu { background: #FFFFFF; border: 1px solid #D1D1D1; padding: 4px; }
+QMenu::item { padding: 6px 18px; border-radius: 4px; }
+QMenu::item:selected { background: #E3EFFB; color: #1B1B1B; }
 QPushButton[primary="true"] { background: #005FB8; border-color: #005FB8; color: #FFFFFF; font-weight: 600; }
 QPushButton[primary="true"]:hover { background: #004E99; }
 QPushButton[primary="true"]:disabled { background: #9DBFE3; border-color: #9DBFE3; color: #FFFFFF; }

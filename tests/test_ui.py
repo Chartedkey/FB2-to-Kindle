@@ -133,10 +133,29 @@ def test_full_flow(env):
         wait(app, lambda: False, 0.5)
         shot(win, "08-library-done")
 
+    # Источник имени автора и сброс данных
+    lt.cb_author_src.set_value(False)
+    assert wait(app, lambda: not lt.scanning and lt.groups, 60)
+    assert s.author_from_folder is False
+    lt.cb_author_src.set_value(True)
+    assert wait(app, lambda: not lt.scanning and lt.groups, 60)
+    lt.reset_data(confirm=False)
+    assert wait(app, lambda: lt.scanned_once and not lt.scanning, 60)
+    assert [g.name for g in lt.groups] == ["Айзек Азимов", "Чайна Мьевилль"]
+    assert len(lt.groups[1].books) == 5            # битая книга тоже у автора — по папке
+    if fbc:
+        assert lt.status_of(next(b for b in lt.groups[0].books if b.title == "Конец Вечности")) == "done"
+    wait(app, lambda: False, 1.0)
+    shot(win, "09-library-after-reset")
+    lt.btn_rescan.menu().popup(lt.btn_rescan.mapToGlobal(lt.btn_rescan.rect().bottomLeft()))
+    wait(app, lambda: False, 0.3)
+    shot(win, "09b-rescan-menu")
+    lt.btn_rescan.menu().hide()
+
     dlg = AdvancedDialog(s, win)
     dlg.show()
     wait(app, lambda: False, 0.3)
-    shot(dlg, "09-advanced")
+    shot(dlg, "10-advanced")
     dlg.reject()
 
     win.close()

@@ -10,7 +10,7 @@ from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
-                               QStackedWidget, QVBoxLayout, QWidget)
+                               QStackedWidget, QToolButton, QMenu, QVBoxLayout, QWidget)
 
 from .. import core, library, wiki
 from .common import (avatar, bold, button, card, cover_placeholder, flags, hline, muted, rounded, set_primary,
@@ -202,7 +202,15 @@ class LibraryTab(QWidget):
         fl.addWidget(self.ed_kindle, 1)
         fl.addWidget(button("Изменить…", slot=self.choose_kindle))
         fl.addSpacing(10)
-        self.btn_rescan = button("Обновить", slot=self.rescan, tip="Перечитать папки (новые и изменённые книги)")
+        self.btn_rescan = QToolButton()
+        self.btn_rescan.setText("Обновить")
+        self.btn_rescan.setToolTip("Перечитать папки: новые, удалённые и изменённые книги")
+        self.btn_rescan.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_rescan.clicked.connect(self.rescan)
+        menu = QMenu(self.btn_rescan)
+        menu.addAction("Сбросить данные библиотеки…").triggered.connect(lambda: self.reset_data())
+        self.btn_rescan.setMenu(menu)
         fl.addWidget(self.btn_rescan)
         self.ch_wiki = QCheckBox("Википедия")
         self.ch_wiki.setToolTip("Загружать справки об авторах и описания книг без аннотации из Википедии")
@@ -291,6 +299,15 @@ class LibraryTab(QWidget):
         self.ed_search.setClearButtonEnabled(True)
         self.ed_search.textChanged.connect(lambda *_: self._search_timer.start())
         lay.addWidget(self.ed_search)
+        src = QHBoxLayout()
+        src.addWidget(muted("Имя автора:"))
+        from .settings_dialog import Choice
+        self.cb_author_src = Choice([(True, "из названия папки"), (False, "из книги (FB2)")], self.s.author_from_folder,
+                                    "Из названия папки: «Мьевилль Чайна» → «Чайна Мьевилль». "
+                                    "Фамилию из нескольких слов отделите запятой: «Ле Гуин, Урсула».")
+        self.cb_author_src.currentIndexChanged.connect(self._author_source_changed)
+        src.addWidget(self.cb_author_src, 1)
+        lay.addLayout(src)
         hdr = QHBoxLayout()
         self.ch_all = QCheckBox("Авторы: 0")
         self.ch_all.setToolTip("Выбрать всех авторов в списке (с учётом поиска и фильтра)")
@@ -485,7 +502,7 @@ class LibraryTab(QWidget):
         def work():
             try:
                 books = library.scan_library(root, library.MetaCache(), progress)
-                groups = library.group_by_author(books, root)
+                groups = library.group_by_author(books, root, self.s.author_from_folder)
                 kindle = library.KindleIndex(kroot)
                 status, outputs = {}, {}
                 for g in groups:
@@ -879,8 +896,7 @@ class LibraryTab(QWidget):
             self._apply_author_wiki(g.key, cached)
             return
         self.lbl_source.setText("Ищу сведения в Википедии…")
-        a = next((b.first_author_obj for b in g.books if b.first_author_obj), None)
-        last = a.last if a else ""
+        last = g.last
 
         def work():
             try:
@@ -924,8 +940,7 @@ class LibraryTab(QWidget):
         if cached is not None:
             self._apply_book_wiki(str(b.path), cached)
             return
-        a = b.first_author_obj
-        last = a.last if a else ""
+        last = g.last
 
         def work():
             try:
@@ -1041,6 +1056,38 @@ class LibraryTab(QWidget):
         active = self.q_total > 0 and self.q_done < self.q_total
         self.btn_stop.setVisible(active)
         self.lbl_queue.setText(f"Конвертация: {self.q_done} из {self.q_total}" if active else "")
+
+    def _author_source_changed(self, *_):
+        value = self.cb_author_src.value()
+        if value == self.s.author_from_folder:
+            return
+        self.s.author_from_folder = value
+        self.s.save()
+        self.checked.clear()
+        self.current_key = None
+        if self.s.library_root:
+            self.rescan()
+
+    def reset_data(self, confirm: bool = True):
+        if self.busy or self.scanning:
+            QMessageBox.information(self, core.APP_NAME, "Дождитесь окончания конвертации или чтения библиотеки.")
+            return
+        if confirm and QMessageBox.question(
+                self, core.APP_NAME,
+                "Сбросить данные библиотеки?\n\nПрограмма забудет сохранённые сведения о книгах, обложки и данные "
+                "из Википедии и перечитает библиотеку заново.\n\nКниги FB2 и готовые файлы для Kindle не изменятся.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        library.reset_caches()
+        self.wiki_cache = wiki.WikiCache()
+        self.small.clear()
+        self.big.clear()
+        self.groups = []
+        self.checked.clear()
+        self.scanned_once = False
+        if self.s.library_root:
+            self.rescan()
+        self.main.notify("Данные библиотеки сброшены")
 
     def _toggle_wiki(self, on: bool):
         self.s.wiki_enabled = on

@@ -69,6 +69,7 @@ class Settings:
     library_root: str = ""
     kindle_root: str = ""
     wiki_enabled: bool = True
+    author_from_folder: bool = True     # автор библиотеки — из названия папки, а не из FB2
     # Основные
     footnotes: str = "float"            # float | floatRenumbered | default
     hyphenation: bool = True
@@ -426,6 +427,22 @@ def find_books(paths: list[str]) -> list[Path]:
         elif p.is_file() and p.name.lower().endswith(BOOK_SUFFIXES):
             add(p)
     return found
+
+
+def folder_author(folder: str) -> tuple[str, str, str]:
+    """Название папки «Фамилия Имя» → («Имя Фамилия», «Фамилия Имя», «Фамилия»).
+
+    Первое слово считается фамилией; фамилию из нескольких слов отделяют запятой: «Ле Гуин, Урсула».
+    """
+    folder = re.sub(r"\s+", " ", folder).strip()
+    if "," in folder:
+        last, rest = (x.strip() for x in folder.split(",", 1))
+    else:
+        parts = folder.split(" ", 1)
+        last, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+    if not rest:
+        return last, last, last
+    return f"{rest} {last}", f"{last} {rest}", last
 
 
 def most_common_author(books: list[Book]) -> str:

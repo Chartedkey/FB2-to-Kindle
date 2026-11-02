@@ -89,3 +89,10 @@ def test_conversion_parallel(lib, tmp_path):
     assert set(status.values()) == {"done"}, [(j.book.path.name, j.message, j.details[-400:]) for j in jobs]
     assert (tmp_path / "out" / "Чайна Мьевилль" / "Кракен.kfx").stat().st_size > 1000
     assert idx.get(lib / "Мьевилль Чайна" / "Кракен.fb2")["output"].endswith("Кракен.kfx")
+
+
+def test_folder_author():
+    assert core.folder_author("Мьевилль Чайна") == ("Чайна Мьевилль", "Мьевилль Чайна", "Мьевилль")
+    assert core.folder_author("Моэм Сомерсет Уильям")[0] == "Сомерсет Уильям Моэм"
+    assert core.folder_author("Ле Гуин, Урсула")[:2] == ("Урсула Ле Гуин", "Ле Гуин Урсула")
+    assert core.folder_author("Гомер") == ("Гомер", "Гомер", "Гомер")

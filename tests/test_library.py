@@ -80,3 +80,52 @@ def test_status(env, tmp_path):
 def test_norm():
     assert library.norm_words("Мьевилль Чайна") == library.norm_words("чайна  мьевилль")
     assert library.norm_title("Город и город - роман") == library.norm_title("Город и город: роман")
+
+
+def test_author_from_folder(tmp_path, monkeypatch):
+    """Разные написания автора в FB2 одной папки — один автор; имя и фамилия меняются местами."""
+    from fixtures import fb2
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    root = tmp_path / "Книги"
+    b = root / "Беккет Сэмюэл"
+    b.mkdir(parents=True)
+    (b / "1.fb2").write_bytes(fb2("В ожидании Годо", "Самуэль", "Беккет"))
+    (b / "2.fb2").write_bytes(fb2("Мёрфи", "Сэмюэл", "Беккетт"))
+    (b / "Пьесы").mkdir()
+    (b / "Пьесы" / "3.fb2").write_bytes(fb2("Конец игры", "Сэмюэль", "Беккет"))
+    m = root / "Моэм Сомерсет Уильям"
+    m.mkdir()
+    (m / "1.fb2").write_bytes(fb2("Луна и грош", "Уильям", "Моэм"))
+    lg = root / "Ле Гуин, Урсула"
+    lg.mkdir()
+    (lg / "1.fb2").write_bytes(fb2("Волшебник Земноморья", "Урсула", "Ле Гуин"))
+    (root / "Без папки.fb2").write_bytes(fb2("Пикник на обочине", "Аркадий", "Стругацкий"))
+    books = library.scan_library(root, library.MetaCache())
+    groups = library.group_by_author(books, root)
+    by = {g.sort_name: g for g in groups}
+    assert set(by) == {"Беккет Сэмюэл", "Моэм Сомерсет Уильям", "Ле Гуин Урсула", "Стругацкий Аркадий"}
+    assert by["Беккет Сэмюэл"].name == "Сэмюэл Беккет" and len(by["Беккет Сэмюэл"].books) == 3
+    assert by["Беккет Сэмюэл"].last == "Беккет"
+    assert by["Моэм Сомерсет Уильям"].name == "Сомерсет Уильям Моэм"
+    assert by["Ле Гуин Урсула"].name == "Урсула Ле Гуин" and by["Ле Гуин Урсула"].last == "Ле Гуин"
+    assert by["Стругацкий Аркадий"].name == "Аркадий Стругацкий"   # книга в корне — автор из FB2
+    # Папка для Kindle — «Имя Фамилия»
+    s = core.Settings(kindle_root=str(tmp_path / "K"))
+    g = by["Беккет Сэмюэл"]
+    assert library.target_path(g.books[0], g, s, None).parent.name == "Сэмюэл Беккет"
+    # Режим «из книги»: написания снова разные
+    meta = {g.sort_name for g in library.group_by_author(books, root, by_folder=False)}
+    assert {"Беккет Самуэль", "Беккетт Сэмюэл", "Беккет Сэмюэль"} <= meta
+
+
+def test_reset_caches(env):
+    root, _ = env
+    library.scan_library(root, library.MetaCache())
+    cache = core.data_dir() / "library-cache.json"
+    assert cache.is_file()
+    (core.data_dir() / "covers").mkdir(exist_ok=True)
+    conv = core.data_dir() / "conversions.json"
+    conv.write_text("{}", encoding="utf-8")
+    library.reset_caches()
+    assert not cache.exists() and not (core.data_dir() / "covers").exists()
+    assert conv.exists()   # журнал конвертаций не трогаем

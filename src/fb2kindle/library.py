@@ -10,8 +10,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .core import (BOOK_SUFFIXES, Book, ConversionIndex, Settings, data_dir, read_metadata, safe_name,
-                   write_json_atomic)
+from .core import (BOOK_SUFFIXES, Book, ConversionIndex, Settings, data_dir, folder_author, read_metadata,
+                   safe_name, write_json_atomic)
 
 KINDLE_SUFFIXES = (".kfx", ".azw8", ".azw3", ".mobi")
 
@@ -104,6 +104,7 @@ class AuthorGroup:
     name: str           # «Имя Фамилия»
     sort_name: str      # «Фамилия Имя»
     books: list[Book] = field(default_factory=list)
+    last: str = ""      # фамилия — для поиска в Википедии
 
     @property
     def initials(self) -> str:
@@ -125,32 +126,47 @@ def norm_title(s: str) -> str:
     return "".join(re.findall(r"\w+", s))
 
 
-def group_by_author(books: list[Book], root: Path) -> list[AuthorGroup]:
+def _top_folder(book: Book, root: Path) -> str:
+    try:
+        rel = book.path.parent.relative_to(root)
+    except ValueError:
+        return ""
+    return rel.parts[0] if rel.parts else ""
+
+
+def group_by_author(books: list[Book], root: Path, by_folder: bool = True) -> list[AuthorGroup]:
+    """Книги по авторам.
+
+    by_folder=True: автор — верхняя папка внутри библиотеки («Мьевилль Чайна» → «Чайна Мьевилль»),
+    книги прямо в корне — по автору из FB2. by_folder=False: всегда по автору из FB2.
+    """
     groups: dict[str, AuthorGroup] = {}
     from_meta: set[str] = set()
     for b in books:
+        folder = _top_folder(b, root)
         a = b.first_author_obj
-        if a:
-            name, sort_name = a.display(), a.sort_name()
+        meta = False
+        if by_folder and folder:
+            name, sort_name, last = folder_author(folder)
+        elif a:
+            name, sort_name, last = a.display(), a.sort_name(), a.last
+            meta = True
+        elif folder:
+            name, sort_name, last = folder_author(folder)
         else:
-            # Автор не указан в книге — берём имя папки
-            try:
-                rel = b.path.parent.relative_to(root)
-                folder = rel.parts[0] if rel.parts else ""
-            except ValueError:
-                folder = ""
-            name = sort_name = folder or "Без автора"
+            name = sort_name = "Без автора"
+            last = ""
         key = norm_words(name) or "без автора"
         g = groups.get(key)
         if g is None:
-            g = groups[key] = AuthorGroup(key=key, name=name, sort_name=sort_name)
-        if a and key not in from_meta:
+            g = groups[key] = AuthorGroup(key=key, name=name, sort_name=sort_name, last=last)
+        if meta and not by_folder and key not in from_meta:
             # имя из самой книги точнее имени папки
-            g.name, g.sort_name = name, sort_name
+            g.name, g.sort_name, g.last = name, sort_name, last
             from_meta.add(key)
         g.books.append(b)
     for g in groups.values():
-        g.books.sort(key=lambda b: (b.series.lower() if b.series else "￿", b.series_num,
+        g.books.sort(key=lambda b: (b.series.lower() if b.series else "\uffff", b.series_num,
                                     b.display_title.lower()))
     return sorted(groups.values(), key=lambda g: g.sort_name.lower().replace("ё", "е"))
 
@@ -214,6 +230,22 @@ def target_path(book: Book, group: AuthorGroup, s: Settings, existing: Path | No
 # --------------------------------------------------------------------------- #
 #  Обложки (миниатюры на диске)
 # --------------------------------------------------------------------------- #
+
+def reset_caches() -> None:
+    """Забыть сохранённые данные библиотеки: описания книг, обложки и сведения из Википедии.
+
+    Книги, готовые файлы для Kindle и журнал конвертаций не трогаются.
+    """
+    import shutil
+    d = data_dir()
+    for name in ("library-cache.json", "wiki-cache.json"):
+        try:
+            (d / name).unlink()
+        except FileNotFoundError:
+            pass
+    for sub in ("covers", "photos"):
+        shutil.rmtree(d / sub, ignore_errors=True)
+
 
 def thumb_path(book: Book) -> Path:
     h = hashlib.sha1(f"{book.path}|{book.size}|{book.mtime}".encode("utf-8")).hexdigest()[:20]
