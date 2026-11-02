@@ -1,0 +1,506 @@
+/* for PDFs defaults selected to closely match KP3 rendering with proper Amazon */
+/* Bookerly fonts. Our built-in fonts are Noto so let's adjust basic measurements */
+/* slightly by default */
+@media fbc-pdf {
+    body {
+        line-height: 130%;
+        font-size: 120%;
+    }
+}
+
+/* Base paragraph style */
+/* default Amazon style defines margin: 1em, 0; */
+p {
+    text-indent: 1em;
+    text-align: justify;
+    margin: 0;
+    orphans: 1;
+    widows: 1;
+}
+@media amzn-mobi {
+    p {
+        text-indent: 1em;
+        text-align: justify;
+        margin: 0 -8pt 0.3em -8pt;
+    }
+}
+/* Negative margins + floats = broken layout in Kindle KFX rendering */
+@media amzn-kf8 and not amzn-et {
+    p {
+        text-indent: 1em;
+        text-align: justify;
+        margin: 0 -8pt 0.3em -8pt;
+    }
+}
+
+/* Code blocks - left aligned, no justification */
+code {
+    text-align: left;
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 70%;
+}
+p code {
+    text-align: left;
+}
+
+/* Paragraphs with drop caps should have no text indent */
+/* default Amazon style defines margin: 1em, 0; */
+p.has-dropcap {
+    text-indent: 0;
+    margin: 0;
+}
+
+/* Drop caps - decorative large first letter */
+p.has-dropcap .dropcap {
+    float: left;
+    font-size: 3.2em;
+    line-height: 1;
+    font-weight: bold;
+    padding-right: 0.1em;
+}
+
+/* Heading sizes */
+h1 {
+    font-size: 140%;
+}
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-size: 120%;
+}
+
+/* Body title wrapper - controls page breaks and margins for entire title block including vignettes */
+.body-title {
+    page-break-before: always;
+    page-break-inside: avoid;
+    page-break-after: avoid;
+    margin: 2em 0 1em 0;
+}
+
+/* Chapter title wrapper (depth 1 sections) - controls page breaks and margins */
+.chapter-title {
+    page-break-before: always;
+    page-break-inside: avoid;
+    page-break-after: avoid;
+    margin: 2em 0 1em 0;
+}
+
+/* Section title wrapper (nested sections) - no page breaks, only margins */
+.section-title {
+    page-break-inside: avoid;
+    page-break-after: avoid;
+    margin: 2em 0 1em 0;
+}
+
+/* H2 section titles (depth 2) get page breaks too */
+.section-title-h2 {
+    page-break-before: always;
+}
+
+/* Body title header (h1-h6 inside body-title wrapper) */
+.body-title-header {
+    text-indent: 0;
+    text-align: center;
+    font-weight: bold;
+}
+.body-title-header-emptyline {
+    display: block;
+    text-align: center;
+    font-weight: bold;
+    margin: 0.8em 0;
+}
+.body-title-header-break {
+    display: block;
+    text-align: center;
+    font-weight: bold;
+}
+.body-title-header-first,
+.body-title-header-next {
+    display: inline;
+    text-indent: 0;
+    text-align: center;
+    font-weight: bold;
+}
+
+/* Chapter title header (h1 inside chapter-title wrapper for depth 1 sections) */
+.chapter-title-header {
+    text-indent: 0;
+    text-align: center;
+    font-weight: bold;
+}
+.chapter-title-header-emptyline {
+    display: block;
+    margin: 0.8em 0;
+}
+.chapter-title-header-break {
+    display: block;
+}
+.chapter-title-header-first,
+.chapter-title-header-next {
+    display: inline;
+    text-indent: 0;
+}
+
+/* Section title header (h2-h6 inside section-title wrapper for nested sections) */
+.section-title-header {
+    text-indent: 0;
+    text-align: center;
+    font-weight: bold;
+}
+.section-title-header-emptyline {
+    display: block;
+    margin: 0.8em 0;
+}
+.section-title-header-break {
+    display: block;
+}
+.section-title-header-first,
+.section-title-header-next {
+    display: inline;
+    text-indent: 0;
+}
+
+/* Table of Contents item */
+.toc-item {
+    text-align: left;
+}
+/* TOC title header (h1 in nav.xhtml or toc-page.xhtml) */
+.toc-title {
+    text-indent: 0;
+    text-align: center;
+    font-weight: bold;
+}
+.toc-title-emptyline {
+    display: block;
+    margin: 0.8em 0;
+}
+.toc-title-break {
+    display: block;
+}
+.toc-title-first,
+.toc-title-next {
+    display: inline;
+    text-indent: 0;
+}
+
+/* Section subtitle */
+.section-subtitle {
+    page-break-before: auto;
+    text-align: center;
+    font-weight: bold;
+    text-indent: 0;
+    margin: 1em 0;
+    page-break-after: avoid;
+}
+
+/* Images */
+.image {
+    text-indent: 0;
+    text-align: center;
+}
+img.image-block {
+    max-width: 100%;
+    max-height: 100%;
+    height: auto;
+}
+img.image-inline {
+    max-width: 100%;
+    max-height: 100%;
+    vertical-align: middle;
+}
+img.image-vignette {
+    width: 100%;
+    height: auto;
+}
+
+/* Vignettes (decorative images at titles and chapter ends) */
+.vignette {
+    text-indent: 0;
+    text-align: center;
+    margin: 0.5em 0;
+}
+.vignette-book-title-top {
+    margin: 1em 0 0.5em 0;
+}
+.vignette-book-title-bottom {
+    margin: 0.5em 0 1em 0;
+}
+.vignette-chapter-title-top {
+    margin: 1em 0 0.5em 0;
+}
+.vignette-chapter-title-bottom {
+    margin: 0.5em 0 1em 0;
+}
+.vignette-chapter-end {
+    margin: 1.5em 0;
+    page-break-before: avoid;
+}
+.vignette-section-title-top {
+    margin: 0.8em 0 0.4em 0;
+}
+.vignette-section-title-bottom {
+    margin: 0.4em 0 0.8em 0;
+}
+.vignette-section-end {
+    margin: 1em 0;
+    page-break-before: avoid;
+}
+
+/* Epigraphs (quotations at chapter/section beginnings) */
+.epigraph {
+    text-align: right;
+    font-style: italic;
+    margin: 0.4em 0 0.2em 4em;
+}
+.epigraph-subtitle {
+    text-align: right;
+    font-style: italic;
+    text-indent: 0;
+    margin: 0.3em 0;
+}
+
+/* Annotations (book summaries and descriptions) */
+.annotation {
+    margin: 2em 1em 1em 1em;
+}
+.annotation-title {
+    margin: 1em 0;
+    text-align: center;
+    text-indent: 0;
+    font-weight: bold;
+}
+.annotation-subtitle {
+    text-align: center;
+    text-indent: 0;
+    margin: 0.5em 0;
+    font-weight: bold;
+}
+
+/* Poems and poetry formatting */
+.poem {
+    text-indent: 0;
+    font-style: italic;
+    margin: 0 0 0 3em;
+}
+.poem-title {
+    margin: 1em 0;
+}
+.poem-title-first,
+.poem-title-next {
+    text-align: center;
+    text-indent: 0;
+    margin: 0;
+}
+.poem-subtitle {
+    text-align: center;
+    text-indent: 0;
+    margin: 0.5em 0;
+}
+
+/* Stanzas (poem sections) */
+.stanza {
+    margin: 0.5em 0;
+}
+.stanza-title {
+    margin: 0.5em 0;
+}
+.stanza-title-first,
+.stanza-title-next {
+    text-align: center;
+    text-indent: 0;
+    margin: 0;
+}
+.stanza-subtitle {
+    text-align: center;
+    text-indent: 0;
+    margin: 0.25em 0;
+}
+
+/* Verses (individual poem lines) */
+.verse {
+    margin: 0.25em 0 0.25em 2em;
+    text-indent: 0;
+}
+
+/* Citations and block quotes */
+.cite,
+blockquote.cite {
+    margin: 1em 2em;
+}
+.cite-subtitle {
+    text-align: left;
+    text-indent: 0;
+    margin: 0.5em 0;
+}
+
+/* Text author attribution */
+.text-author {
+    text-align: right;
+    font-style: italic;
+    text-indent: 0;
+    page-break-before: avoid;
+    font-weight: bold;
+}
+
+/* Date elements */
+.date {
+    text-align: right;
+    text-indent: 0;
+    margin: 0.5em 0;
+    page-break-before: avoid;
+}
+
+/* Empty lines for spacing */
+.emptyline {
+    display: block;
+    margin: 1em;
+}
+
+/* Generic section container */
+.section {
+    margin: 1em 0;
+}
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em auto;
+    page-break-inside: avoid;
+}
+th {
+    border: 1px solid black;
+    background: #ccc;
+    padding: 0.5em;
+}
+td {
+    border: 1px solid black;
+    padding: 0.5em;
+}
+
+/* Footnotes */
+.footnote {
+    text-indent: 0;
+}
+.footnote-title {
+    margin: 1em 0 0.5em 0;
+    text-align: left;
+    font-weight: bold;
+}
+.footnote-title-first,
+.footnote-title-next {
+    text-indent: 0;
+    margin: 0.2em 0;
+}
+
+/* For PDF printed-like footnotes */
+@media fbc-pdf {
+    .footnote {
+        font-size: 70%;
+        line-height: 115%;
+        margin: 0.15em 0;
+    }
+    .footnote-title {
+        margin: 0.35em 0 0.15em 0;
+        text-align: left;
+        text-indent: 0;
+        font-weight: bold;
+        page-break-after: avoid;
+    }
+    .footnote p,
+    .footnote .annotation,
+    .footnote .annotation-title,
+    .footnote .annotation-subtitle,
+    .footnote .epigraph,
+    .footnote .epigraph-subtitle,
+    .footnote .poem,
+    .footnote .poem-title,
+    .footnote .poem-title-first,
+    .footnote .poem-title-next,
+    .footnote .poem-subtitle,
+    .footnote .stanza,
+    .footnote .stanza-title,
+    .footnote .stanza-title-first,
+    .footnote .stanza-title-next,
+    .footnote .stanza-subtitle,
+    .footnote .verse,
+    .footnote .cite,
+    .footnote .cite-subtitle,
+    .footnote .text-author,
+    .footnote .date,
+    .footnote table,
+    .footnote th,
+    .footnote td {
+        line-height: 115%;
+    }
+    .footnote-title-first,
+    .footnote-title-next {
+        font-size: 70%;
+        line-height: 115%;
+        margin: 0.1em 0;
+        text-indent: 0;
+    }
+    .footnote .link-backlink {
+        font-size: 1em;
+        line-height: 115%;
+    }
+    .footnote-separator {
+        border-top: 0.5pt solid;
+        margin-top: 0.25em;
+        margin-bottom: 0.25em;
+        width: 100%;
+    }
+}
+
+/* "More" indicator for floating footnotes */
+@media not amzn-et {
+    .footnote-more {
+        text-decoration: none;
+        font-weight: bold;
+        color: gray;
+    }
+}
+@media amzn-et {
+    .footnote-more {
+        display: none;
+    }
+}
+
+/* NOTE: Amazon viewers and AdobeDE ignore text-decoration:none on links */
+/* Links and hyperlink styles */
+.link-external {
+    text-decoration: underline;
+}
+.link-internal {
+    text-decoration: underline;
+}
+.link-footnote {
+    text-decoration: underline;
+    font-style: normal;
+    font-size: 0.8em;
+    vertical-align: super;
+}
+/* Footnote link decorations, only "content" is supported for KFX/PDF */
+/* .link-footnote::before { */
+/*     content: "[" */
+/* } */
+/* .link-footnote::after { */
+/*     content: "]" */
+/* } */
+.link-toc {
+    text-decoration: underline;
+}
+.link-backlink {
+    text-decoration: underline;
+    text-align: left;
+    font-weight: bold;
+    color: gray;
+}
+
+/* Unexpected/error elements */
+.unexpected {
+    text-decoration: line-through;
+}

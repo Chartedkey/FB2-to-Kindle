@@ -1,0 +1,93 @@
+name: Сборка
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Зависимости
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Конвертер fb2cng (официальная сборка)
+        run: python tools/get_fbc.py fbc windows
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Тесты
+        run: python -m pytest -v tests --ignore=tests/test_wiki.py
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Википедия (не блокирует сборку)
+        continue-on-error: true
+        run: python -m pytest -v -s tests/test_wiki.py
+
+      - name: Сборка exe
+        shell: pwsh
+        run: |
+          $ver = python tools/make_version_info.py
+          "VERSION=$ver" >> $env:GITHUB_ENV
+          python -m PyInstaller --noconfirm FB2Kindle.spec
+
+      - name: Проверка exe
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          Copy-Item -Recurse fbc "dist/FB2 Kindle/fbc"
+          Copy-Item assets/fb2cng-LICENSE.txt "dist/FB2 Kindle/fbc/LICENSE.txt"
+          New-Item -ItemType Directory -Force screenshots | Out-Null
+          $shot = Join-Path $PWD "screenshots/10-exe.png"
+          $p = Start-Process -FilePath "dist/FB2 Kindle/FB2 Kindle.exe" -ArgumentList "--screenshot", "`"$shot`"" -PassThru
+          if (-not $p.WaitForExit(90000)) { $p.Kill(); throw "exe не завершился" }
+          if (-not (Test-Path $shot)) { throw "exe не запустился" }
+          "{0:N1} МБ" -f ((Get-ChildItem -Recurse "dist/FB2 Kindle" | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Архив
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE "dist/FB2 Kindle/"
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path "dist/FB2 Kindle" -DestinationPath "release/FB2-Kindle-$env:VERSION-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FB2-Kindle-${{ env.VERSION }}-windows
+          path: release/*.zip
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 14
+
+      - name: Выпуск
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $notes = if (Test-Path "CHANGELOG/$env:GITHUB_REF_NAME.md") { "CHANGELOG/$env:GITHUB_REF_NAME.md" } else { $null }
+          if ($notes) { gh release create $env:GITHUB_REF_NAME release/*.zip --title "FB2 → Kindle $env:VERSION" --notes-file $notes }
+          else { gh release create $env:GITHUB_REF_NAME release/*.zip --title "FB2 → Kindle $env:VERSION" --generate-notes }
