@@ -170,6 +170,8 @@ class LibraryTab(QWidget):
         self.current_conv: core.Converter | None = None
         self.q_total = 0
         self.q_done = 0
+        self.q_ok = 0
+        self.q_err = 0
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -1008,20 +1010,21 @@ class LibraryTab(QWidget):
             self.outputs[key] = job.output
             self.errors.pop(key, None)
             self.set_status(key, "done")
+            self.q_ok += 1
         elif job.status == "error":
             self.errors[key] = job.message.replace("Ошибка: ", "")
             self.set_status(key, "error")
+            self.q_err += 1
         elif job.status == "cancel":
             self.set_status(key, self.prev.get(key, "none"))
         self.q_done += 1
         self._refresh_queue_label()
 
     def _on_queue_finished(self):
-        errors = sum(1 for k, v in self.status.items() if v == "error")
-        done = self.q_done
-        self.q_total = self.q_done = 0
+        ok, err = self.q_ok, self.q_err
+        self.q_total = self.q_done = self.q_ok = self.q_err = 0
         self._refresh_queue_label()
-        self.main.notify(f"Конвертация завершена: {done}" + (f", ошибок: {errors}" if errors else ""))
+        self.main.notify(f"Сконвертировано книг: {ok}" + (f", ошибок: {err} (подробности — в строке книги)" if err else ""))
 
     def stop_queue(self):
         with self.queue_lock:
