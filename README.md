@@ -58,7 +58,7 @@ python -m pytest tests
 python tools/make_version_info.py && python -m PyInstaller --noconfirm FB2Kindle.spec
 ```
 
-Новая версия: поменять `__version__` в `src/fb2kindle/__init__.py`, описать изменения в `CHANGELOG/vX.Y.Z.md` и отправить тег `vX.Y.Z` — GitHub соберёт exe и создаст выпуск.
+Новая версия: поменять `__version__` в `src/fb2kindle/__init__.py` и описать изменения в `CHANGELOG/vX.Y.Z.md`. После отправки в `main` GitHub соберёт exe и сам создаст выпуск `vX.Y.Z`.
 
 ## Лицензия
 
