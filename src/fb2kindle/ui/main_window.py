@@ -10,7 +10,7 @@ from PySide6.QtCore import QByteArray, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QStyleFactory, QTabWidget
 
-from .. import __version__, core, updater
+from .. import __version__, core, updater, reading, editorial
 from .common import button, init_bridge, stylesheet, ui_call
 from .convert_tab import ConvertTab
 from .update_dialog import UpdateDialog
@@ -55,8 +55,25 @@ class MainWindow(QMainWindow):
         self._msg_timer.timeout.connect(lambda: self.lbl_msg.setText(""))
         self.refresh_fbc()
 
-        self.tabs.setCurrentIndex(self.s.last_tab if self.s.last_tab in (0, 1) else 0)
+        # Трекер изолирован: ошибка его базы не блокирует конвертацию.
+        self.reading_tab = None
+        try:
+            from .reading_tab import ReadingTab
+            history = reading.ReadingStore()
+            try:
+                catalog, catalog_error = editorial.Catalog(), ""
+            except Exception as err:
+                catalog, catalog_error = None, str(err)
+            self.reading_tab = ReadingTab(self, history, catalog, catalog_error)
+            self.tabs.addTab(self.reading_tab, "Моё чтение")
+        except Exception as err:
+            label = QLabel("История чтения недоступна. Её файлы сохранены.\n" + str(err))
+            label.setWordWrap(True)
+            self.tabs.addTab(label, "Моё чтение")
+
+        self.tabs.setCurrentIndex(self.s.last_tab if self.s.last_tab in (0, 1, 2) else 0)
         self._on_tab(self.tabs.currentIndex())
+        QTimer.singleShot(4000, self.reading_report_notice)
 
     # ------------------------------------------------------------------------
 
@@ -64,10 +81,18 @@ class MainWindow(QMainWindow):
         self.s.last_tab = idx
         if idx == 1:
             self.library_tab.ensure_loaded()
+        elif idx == 2:
+            self.library_tab.ensure_loaded()
+            if self.reading_tab:
+                self.reading_tab.refresh()
 
     def notify(self, text: str, ms: int = 8000):
         self.lbl_msg.setText(text)
         self._msg_timer.start(ms)
+
+    def reading_report_notice(self):
+        if self.reading_tab and not self.reading_tab.closing and self.reading_tab.due_reports():
+            self.notify("Готовы итоги чтения за завершившийся период. Откройте «Моё чтение» → «Обзор».", 20000)
 
     def settings_changed(self):
         self.convert_tab.settings_changed()
@@ -167,6 +192,8 @@ class MainWindow(QMainWindow):
             if self.convert_tab.converter:
                 self.convert_tab.converter.cancel()
         self.library_tab.shutdown()
+        if self.reading_tab:
+            self.reading_tab.shutdown()
         self.convert_tab.collect()
         self.s.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.s.save()

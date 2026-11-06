@@ -105,6 +105,10 @@ class BookRow(QWidget):
         self.sub.setProperty("muted", True)
         col.addWidget(self.title)
         col.addWidget(self.sub)
+        self.reading_chip = QLabel()
+        self.reading_chip.setTextFormat(Qt.TextFormat.PlainText)
+        self.reading_chip.setStyleSheet("color:#005FB8; font-size:11px;")
+        col.addWidget(self.reading_chip)
         lay.addLayout(col, 1)
         self.chip = QLabel()
         self.chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -125,6 +129,14 @@ class BookRow(QWidget):
         self.action.setText(label)
         self.action.setEnabled(enabled)
         set_primary(self.action, primary)
+        self.refresh_reading()
+
+    def refresh_reading(self):
+        from ..reading import STATUSES
+        tracker = getattr(self.tab.main, "reading_tab", None)
+        entry = tracker.entry_for_book(self.book, self.group.name) if tracker else None
+        self.reading_chip.setText((STATUSES[entry.status] + (" · " + "★" * entry.rating if entry.rating else "")) if entry else "")
+        self.reading_chip.setVisible(entry is not None)
 
 
 def action_for(status: str) -> tuple[str, bool, bool]:
@@ -176,6 +188,8 @@ class LibraryTab(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
         self._search_timer.timeout.connect(self.rebuild_authors)
+        self._reading_search = None
+        self._reading_author = ""
         self._build()
 
     # ------------------------------------------------------------------ UI --
@@ -299,6 +313,9 @@ class LibraryTab(QWidget):
         self.ed_search.setClearButtonEnabled(True)
         self.ed_search.textChanged.connect(lambda *_: self._search_timer.start())
         lay.addWidget(self.ed_search)
+        self.btn_reading_author = button("Все книги автора", slot=self.search_reading_author)
+        self.btn_reading_author.setVisible(False)
+        lay.addWidget(self.btn_reading_author)
         src = QHBoxLayout()
         src.addWidget(muted("Имя автора:"))
         from .settings_dialog import Choice
@@ -449,6 +466,13 @@ class LibraryTab(QWidget):
                                  slot=lambda: self.current_book and self.book_action(self.current_book, self.group_of[str(self.current_book.path)]))
         btns.addWidget(self.det_action)
         btns.addWidget(button("Показать FB2 в папке", slot=lambda: self.current_book and show_in_explorer(self.current_book.path)))
+        self.reading_detail = QLabel("")
+        self.reading_detail.setTextFormat(Qt.TextFormat.PlainText)
+        self.reading_detail.setWordWrap(True)
+        btns.addWidget(self.reading_detail)
+        self.btn_reading = button("Статус чтения и оценка…", slot=self.edit_reading)
+        self.btn_reading.setEnabled(False)
+        btns.addWidget(self.btn_reading)
         lay.addLayout(btns)
         lay.addStretch(1)
         scroll.setWidget(inner)
@@ -548,6 +572,11 @@ class LibraryTab(QWidget):
         self.update_summary()
         if not groups:
             self.lbl_summary.setText("В папке нет книг FB2.")
+        tracker = getattr(self.main, "reading_tab", None)
+        if tracker:
+            tracker.refresh()
+        if self._reading_search:
+            self.apply_reading_search()
 
     # ------------------------------------------------------------- Статусы --
 
@@ -735,7 +764,7 @@ class LibraryTab(QWidget):
             row = BookRow(self, b, g)
             it = QListWidgetItem()
             it.setData(Qt.ItemDataRole.UserRole, str(b.path))
-            it.setSizeHint(QSize(100, 66))
+            it.setSizeHint(QSize(100, 82 if not row.reading_chip.isHidden() else 66))
             self.lst_books.addItem(it)
             self.lst_books.setItemWidget(it, row)
             self.book_rows[str(b.path)] = row
@@ -798,7 +827,68 @@ class LibraryTab(QWidget):
             self.det_ann_label.setText("Аннотация")
             self.det_ann.setText("В книге нет аннотации.")
         self._refresh_detail_status()
+        self.refresh_reading_detail()
         self._set_big_cover(b, g)
+
+    def refresh_reading_detail(self):
+        from ..reading import STATUSES, date_label
+        tracker = getattr(self.main, "reading_tab", None)
+        b = self.current_book
+        self.btn_reading.setEnabled(bool(tracker and b))
+        g = self.group_of.get(str(b.path)) if b else None
+        entry = tracker.entry_for_book(b, g.name if g else "") if tracker and b else None
+        self.reading_detail.setText("\n".join(x for x in
+            (STATUSES[entry.status], "★" * entry.rating, date_label(entry)) if x) if entry else "")
+
+    def edit_reading(self):
+        tracker = getattr(self.main, "reading_tab", None)
+        if tracker and self.current_book:
+            g = self.group_of.get(str(self.current_book.path))
+            tracker.edit_book(self.current_book, g.name if g else "")
+
+    def search_from_reading(self, title, author=""):
+        self._reading_search = (title, author)
+        self._reading_author = author
+        self.btn_reading_author.setVisible(bool(author))
+        if self.scanned_once:
+            self.apply_reading_search()
+        else:
+            self.ensure_loaded()
+            if not self.s.library_root:
+                self.main.notify("Выберите папку с FB2, чтобы искать в библиотеке.", 12000)
+
+    def apply_reading_search(self):
+        title, author = self._reading_search
+        self._reading_search = None
+        self.filter_buttons["all"].setChecked(True)
+        self.filter = "all"
+        self.ed_search.setText(title)
+        self._search_timer.stop()
+        self.rebuild_authors()
+        matches = [(g, b) for g in self.groups for b in g.books
+                   if library.norm_title(b.display_title) == library.norm_title(title)
+                   and (not author or library.norm_words(author) in
+                        (library.norm_words(g.name), library.norm_words(b.first_author)))]
+        if len(matches) == 1:
+            g, b = matches[0]
+            self.current_book = b
+            for i in range(self.lst_authors.count()):
+                it = self.lst_authors.item(i)
+                if it.data(Qt.ItemDataRole.UserRole) == g.key:
+                    self.lst_authors.setCurrentItem(it)
+                    break
+            self.show_author(g.key)
+            for i in range(self.lst_books.count()):
+                it = self.lst_books.item(i)
+                if it.data(Qt.ItemDataRole.UserRole) == str(b.path):
+                    self.lst_books.setCurrentItem(it)
+                    break
+        elif not self.visible_groups():
+            self.main.notify("По этому запросу ничего не найдено. Попробуйте другое название или все книги автора. Для добавления нужен FB2 или FB2.ZIP.", 20000)
+
+    def search_reading_author(self):
+        if self._reading_author:
+            self.ed_search.setText(self._reading_author)
 
     def _refresh_detail_status(self):
         b = self.current_book
