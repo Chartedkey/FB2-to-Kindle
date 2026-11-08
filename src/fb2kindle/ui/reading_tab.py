@@ -558,6 +558,7 @@ class ReadingTab(QWidget):
         lay = QVBoxLayout(dialog)
         lay.addWidget(plain("Эти книги исключены из рекомендаций обоих источников. Предпочтения по авторам и жанрам не меняются."))
         books = QListWidget()
+        books.setStyleSheet("QListWidget::item { padding:8px; } QListWidget::item:selected { background:#E3EFFB; color:#1B1B1B; }")
         for c in dismissed:
             item = QListWidgetItem(f'{c["title"]} — {c["author"]}')
             item.setData(Qt.ItemDataRole.UserRole, c["key"])
