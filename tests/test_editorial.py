@@ -248,3 +248,18 @@ def test_partial_books_remain_available_during_site_pause(tmp_path):
     assert len(catalog.candidates()) == 1
     assert catalog.candidates()[0]['sources'][0]['partial']
     assert catalog.state('retry_after') > 0
+
+
+def test_anthologies_without_author_links_are_not_lost(tmp_path):
+    html = collection([('book', 1), ('book', 2)], expected=2)
+    html = html.replace('href="/book/1-title"', 'href="/book/1-title" title="Антология - Книга 1"')
+    html = html.replace('<a class="brow-book-author" href="/author/7">Автор</a>', '')
+    expected, books = editorial.parse_collection(html)
+    assert expected == len(books) == 2
+    assert books[0]['author'] == 'Антология'
+    assert books[1]['author'] == 'Автор не указан'
+    catalog = editorial.Catalog(tmp_path / 'catalog.db')
+    catalog.discover([{'id': 'collection:1', 'kind': 'collection', 'title': 'Антология', 'url': editorial.BASE + '/selection/1'}])
+    catalog.step(lambda u: html)
+    assert catalog.documents()[0]['complete']
+    assert len(catalog.candidates()) == 2

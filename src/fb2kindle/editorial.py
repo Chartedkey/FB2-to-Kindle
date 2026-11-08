@@ -178,11 +178,16 @@ def parse_collection(html: str) -> tuple[int, list[dict]]:
             block = block.parent
         authors = list(block.all("a", "brow-book-author"))
         author = ", ".join(dict.fromkeys(" ".join(n.text().split()) for n in authors))
+        if not author:
+            # У антологий/сборников нет brow-book-author, но подпись обложки
+            # содержит «Антология - Название». Такие книги тоже входят в счётчик.
+            byline, separator, _title = a.attrs.get("title", "").partition(" - ")
+            author = byline.strip() if separator else "Автор не указан"
+            author = author or "Автор не указан"
         genres = [re.sub(r"^№\d+\s*в\s*", "", " ".join(g.text().split())) for g in block.all("a", "label-genre")]
-        if author:
-            books.append({"ref": m.group(1) + ":" + m.group(2), "title": " ".join(a.text().split()),
-                          "author": author, "genres": genres, "url": site_url(a.attrs["href"]),
-                          "cover_url": covers.get(m.group(1) + ":" + m.group(2), "")})
+        books.append({"ref": m.group(1) + ":" + m.group(2), "title": " ".join(a.text().split()),
+                      "author": author, "genres": genres, "url": site_url(a.attrs["href"]),
+                      "cover_url": covers.get(m.group(1) + ":" + m.group(2), "")})
     return int(match.group(1)), books
 
 
