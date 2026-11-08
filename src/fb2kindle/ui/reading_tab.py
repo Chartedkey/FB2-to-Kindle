@@ -28,6 +28,13 @@ def bold(text, size=10):
     return label
 
 
+def external_link(title, url, prefix=""):
+    label = QLabel(f'{escape(prefix)}<a style="color:#004A8F;" href="{escape(url, quote=True)}">{escape(title)} ↗</a>')
+    label.setWordWrap(True)
+    label.setOpenExternalLinks(True)
+    return label
+
+
 class ReadingTab(QWidget):
     def __init__(self, main, store: reading.ReadingStore, catalog: editorial.Catalog | None, catalog_error=""):
         super().__init__()
@@ -460,6 +467,12 @@ class ReadingTab(QWidget):
         header.addStretch(1)
         header.addWidget(button("Мои предпочтения…", slot=self.preferences))
         lay.addLayout(header)
+        dismissed = self.store.pref("dismissed_recommendations", [])
+        if dismissed:
+            tools = QHBoxLayout()
+            tools.addWidget(button(f"Скрытые книги ({len(dismissed)})…", slot=self.show_dismissed))
+            tools.addStretch(1)
+            lay.addLayout(tools)
         if self.source_choice.currentData() == "editorial":
             lay.addWidget(self.network_card())
             candidates = self.catalog.candidates() if self.catalog else []
@@ -467,9 +480,9 @@ class ReadingTab(QWidget):
             candidates = recommendations.local_candidates(self.main.library_tab.groups)
             if not self.main.library_tab.scanned_once:
                 lay.addWidget(button("Загрузить библиотеку", slot=self.main.library_tab.ensure_loaded))
-        self.candidates = recommendations.rank(candidates, self.entries, self.store.pref("taste", {}))
+        self.candidates = recommendations.rank(candidates, self.entries, self.store.pref("taste", {}), dismissed=dismissed)
         if not self.candidates:
-            lay.addWidget(plain("Пока нет рекомендаций. Загрузите каталог или библиотеку. Прочитанные, отложенные книги и книги, которые вы читаете, не предлагаются."))
+            lay.addWidget(plain("Пока нет рекомендаций. Загрузите каталог или библиотеку. Прочитанные, отложенные, скрытые книги и книги, которые вы читаете, не предлагаются."))
         for candidate in self.candidates:
             lay.addWidget(self.rec_card(candidate))
 
@@ -492,9 +505,7 @@ class ReadingTab(QWidget):
         text_column = QVBoxLayout()
         title_row = QHBoxLayout()
         if c.get("url"):
-            link = QLabel(f'<a href="{escape(c["url"], quote=True)}">{escape(c["title"])} ↗</a>')
-            link.setOpenExternalLinks(True)
-            link.setWordWrap(True)
+            link = external_link(c["title"], c["url"])
         else:
             link = plain(c["title"])
         title_row.addWidget(link, 1)
@@ -506,9 +517,7 @@ class ReadingTab(QWidget):
         header.addLayout(text_column, 1)
         lay.addLayout(header)
         for source in c.get("sources", [])[:3]:
-            link = QLabel(f'LiveLib Редакция · <a href="{escape(source["url"], quote=True)}">{escape(source["title"])} ↗</a>')
-            link.setWordWrap(True)
-            link.setOpenExternalLinks(True)
+            link = external_link(source["title"], source["url"], "LiveLib Редакция · ")
             lay.addWidget(link)
             if source.get("partial"):
                 lay.addWidget(muted("Подборка загружена частично; остальные книги ещё загружаются.", 8.5))
@@ -518,9 +527,53 @@ class ReadingTab(QWidget):
         wish = button("В планах" if c.get("planned") else "Хочу прочитать", slot=lambda: self.mark_candidate(c, "wish"))
         wish.setEnabled(not c.get("planned"))
         row.addWidget(wish)
+        row.addWidget(button("Не интересует", slot=lambda: self.dismiss_candidate(c)))
         row.addStretch(1)
         lay.addLayout(row)
         return outer
+
+    def dismiss_candidate(self, candidate):
+        dismissed = self.store.pref("dismissed_recommendations", [])
+        previous = next((c for c in dismissed if c["key"] == candidate["key"]), {})
+        record = {k: candidate[k] for k in ("key", "title", "author")}
+        record["refs"] = list(dict.fromkeys(previous.get("refs", []) + candidate.get("refs", [])))
+        dismissed = [c for c in dismissed if c["key"] != candidate["key"]] + [record]
+        if self.save_dismissed(dismissed):
+            self.main.notify("Книга скрыта. Вернуть её можно через «Скрытые книги…».")
+
+    def save_dismissed(self, dismissed):
+        try:
+            self.store.set_pref("dismissed_recommendations", dismissed)
+        except Exception as e:
+            QMessageBox.warning(self, core.APP_NAME, f"Не удалось сохранить скрытые книги.\n{e}")
+            return False
+        self.network_progress()
+        return True
+
+    def show_dismissed(self):
+        dismissed = self.store.pref("dismissed_recommendations", [])
+        dialog = QDialog(self)
+        setup_dialog(dialog, "Скрытые книги")
+        dialog.resize(620, 380)
+        lay = QVBoxLayout(dialog)
+        lay.addWidget(plain("Эти книги исключены из рекомендаций обоих источников. Предпочтения по авторам и жанрам не меняются."))
+        books = QListWidget()
+        for c in dismissed:
+            item = QListWidgetItem(f'{c["title"]} — {c["author"]}')
+            item.setData(Qt.ItemDataRole.UserRole, c["key"])
+            books.addItem(item)
+        books.setCurrentRow(0)
+        lay.addWidget(books, 1)
+        row = QHBoxLayout()
+        restore = button("Вернуть в рекомендации", primary=True, slot=dialog.accept)
+        restore.setEnabled(bool(dismissed))
+        row.addWidget(restore)
+        row.addWidget(button("Закрыть", slot=dialog.reject))
+        lay.addLayout(row)
+        if dialog.exec() == QDialog.DialogCode.Accepted and books.currentItem():
+            key = books.currentItem().data(Qt.ItemDataRole.UserRole)
+            if self.save_dismissed([c for c in dismissed if c["key"] != key]):
+                self.main.notify("Книга возвращена в рекомендации.")
 
     def mark_candidate(self, c, status):
         entry = self.candidate_entry(c)
@@ -598,6 +651,11 @@ class ReadingTab(QWidget):
             lay.addWidget(plain(progress["detail"]))
         message = self.catalog.state("message", "Загрузите редакционные материалы. История чтения никуда не отправляется.")
         lay.addWidget(plain(message))
+        deferred = self.catalog.state("deferred_pages", {})
+        if deferred:
+            lay.addWidget(plain(f"Недоступных страниц: {len(deferred)}. Их прогресс сохранён; ошибки этих страниц не блокируют остальные материалы. Повторная попытка — не раньше чем через 15 минут после ошибки."))
+            for url, info in list(deferred.items())[:3]:
+                lay.addWidget(external_link(f"Страница с HTTP {info['status']}", url))
         retry = self.catalog.state("retry_after", 0)
         if retry > time.time():
             lay.addWidget(plain("Повторная попытка не раньше " + datetime.fromtimestamp(retry).strftime("%d.%m %H:%M")))

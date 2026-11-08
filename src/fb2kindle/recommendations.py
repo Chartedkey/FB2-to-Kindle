@@ -26,8 +26,11 @@ def local_candidates(groups: list[library.AuthorGroup]) -> list[dict]:
     return list(result.values())
 
 
-def rank(candidates: list[dict], entries: list[Entry], prefs: dict, limit: int = 12) -> list[dict]:
+def rank(candidates: list[dict], entries: list[Entry], prefs: dict, limit: int = 12,
+         dismissed: list[dict] | None = None) -> list[dict]:
     by_key = {e.key: e for e in entries}
+    dismissed_keys = {c["key"] for c in dismissed or []}
+    dismissed_refs = {r for c in dismissed or [] for r in c.get("refs", [])}
     excluded_refs = {r for e in entries if e.status in ("read", "reading") for r in e.refs}
     favorite_authors = {library.norm_words(a) for a in prefs.get("authors", [])}
     excluded_authors = {library.norm_words(a) for a in prefs.get("exclude_authors", [])}
@@ -45,6 +48,8 @@ def rank(candidates: list[dict], entries: list[Entry], prefs: dict, limit: int =
     scored = []
     for c in candidates:
         key = c.get("key") or identity(c["title"], c["author"])
+        if key in dismissed_keys or dismissed_refs.intersection(c.get("refs", [])):
+            continue
         entry = by_key.get(key)
         author = library.norm_words(c["author"])
         if (entry and entry.status in ("read", "reading", "paused")) or excluded_refs.intersection(c.get("refs", [])):

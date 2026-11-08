@@ -37,6 +37,12 @@ class SitePaused(SourceError):
     pass
 
 
+class PageUnavailable(SourceError):
+    def __init__(self, url, status):
+        self.url, self.status = url, status
+        super().__init__(f"LiveLib ответил HTTP {status}. Страница отложена; остальные материалы продолжают загружаться.")
+
+
 @dataclass
 class Node:
     tag: str
@@ -92,6 +98,10 @@ def site_url(href: str) -> str:
     return urllib.parse.urlunsplit(("https", "www.livelib.ru", u.path, "", ""))
 
 
+def page_url(url: str, page: int) -> str:
+    return url + (f"/~{page}" if page > 1 else "")
+
+
 def check_page(html: str):
     low = html.casefold()
     if any(s in low for s in ("слишком много запросов", "введите текст с картинки", "ratelimitcaptcha", "verify you are human")):
@@ -113,6 +123,8 @@ def fetch(url: str) -> str:
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
             raise SitePaused("LiveLib временно ограничил доступ. Каталог сохранён; повторите позже.") from e
+        if e.code in (404, 410):
+            raise PageUnavailable(site_url(url), e.code) from e
         raise SourceError(f"LiveLib ответил HTTP {e.code}. Страница не пропущена.") from e
     check_page(html)
     return html
@@ -353,24 +365,31 @@ class Catalog:
                 "detail": detail}
 
     def step(self, getter=fetch, progress=lambda: None) -> bool:
+        deferred = self.state("deferred_pages", {})
+        def ready(url):
+            return deferred.get(url, {}).get("retry_after", 0) <= time.time()
         for kind, base in (("collection", COLLECTION_INDEX), ("article", ARTICLE_INDEX)):
             # Подборки загружаются раньше большого архива статей.
-            pending = next((d for d in self.documents() if d["kind"] == kind and not d.get("complete")), None)
+            pending = next((d for d in self.documents() if d["kind"] == kind and not d.get("complete")
+                            and ready(page_url(d["url"], d.get("page", 1)))), None)
             page = self.state(kind + "_index", 1)
+            index_url = page_url(base, page)
+            index_ready = page and ready(index_url)
             index_started = self.state(kind + "_index") is not None
             # Чередуем обнаружение следующих материалов и загрузку книг.
             # Сами документы остаются в стабильной очереди до завершения.
-            if pending and (not page or not index_started or self.state(kind + "_last_task", "index") == "index"):
-                task = {"type": "document", "id": pending["id"], "page": pending.get("page", 1), "loading": True}
+            if pending and (not index_ready or not index_started or self.state(kind + "_last_task", "index") == "index"):
+                task = {"type": "document", "id": pending["id"], "page": pending.get("page", 1), "loading": True,
+                        "url": page_url(pending["url"], pending.get("page", 1))}
                 self.set_state("active_task", task)
                 progress()
                 self._document_step(pending, getter)
                 self.set_state("active_task", {**task, "loading": False})
                 self.set_state(kind + "_last_task", "document")
                 return True
-            if page:
-                url = base + (f"/~{page}" if page > 1 else "")
-                task = {"type": "index", "kind": kind, "page": page, "loading": True}
+            if index_ready:
+                url = index_url
+                task = {"type": "index", "kind": kind, "page": page, "loading": True, "url": url}
                 self.set_state("active_task", task)
                 progress()
                 docs, last = parse_index(getter(url), kind)
@@ -384,7 +403,7 @@ class Catalog:
 
     def _document_step(self, doc, getter):
         page = doc.get("page", 1)
-        html = getter(doc["url"] + (f"/~{page}" if page > 1 else ""))
+        html = getter(page_url(doc["url"], page))
         if doc["kind"] == "article":
             books = parse_article(html)
             doc.update(books=books, complete=True, checked=time.time())
@@ -416,12 +435,32 @@ class Catalog:
             self.set_state("last_request", time.time())
             try:
                 if not self.step(getter, progress):
+                    deferred = self.state("deferred_pages", {})
+                    retries = [p["retry_after"] for p in deferred.values() if p["retry_after"] > time.time()]
+                    if retries:
+                        self.set_state("retry_after", min(retries))
+                        self.set_state("message", "Доступные материалы загружены. Недоступные страницы будут проверены повторно; прогресс сохранён.")
+                        progress()
+                        return
                     self.set_state("message", "Все обнаруженные материалы сверены. Полнота всего архива сайта не гарантируется.")
                     self.set_state("last_complete", time.time())
                     self.set_state("enabled", False)
                     progress()
                     return
+                deferred = self.state("deferred_pages", {})
+                url = self.state("active_task", {}).get("url")
+                if url in deferred:
+                    del deferred[url]
+                    self.set_state("deferred_pages", deferred)
                 self.set_state("message", "Прогресс сохранён. Загрузка продолжается небольшими порциями.")
+                self.set_state("retry_after", 0)
+            except PageUnavailable as e:
+                task = self.state("active_task", {})
+                self.set_state("active_task", {**task, "loading": False})
+                deferred = self.state("deferred_pages", {})
+                deferred[task.get("url") or e.url] = {"status": e.status, "retry_after": time.time() + 15 * 60}
+                self.set_state("deferred_pages", deferred)
+                self.set_state("message", str(e))
                 self.set_state("retry_after", 0)
             except Exception as e:
                 task = self.state("active_task", {})

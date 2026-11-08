@@ -100,6 +100,95 @@ def test_cancelled_batch_makes_no_request(tmp_path):
     assert calls == []
 
 
+@pytest.mark.parametrize("status", [404, 410])
+def test_missing_page_does_not_block_other_documents_and_retries_after_restart(tmp_path, monkeypatch, status):
+    now = [1_000_000.0]
+    monkeypatch.setattr(editorial.time, "time", lambda: now[0])
+    catalog = editorial.Catalog(tmp_path / "catalog.db")
+    docs = [{"id": f"collection:{i}", "kind": "collection", "url": editorial.BASE + f"/selection/{i}", "title": str(i)} for i in (1, 2)]
+    catalog.discover(docs)
+    catalog.set_state("collection_index", 0)
+    catalog.set_state("article_index", 0)
+    catalog.set_state("enabled", True)
+    catalog.step(lambda u: collection([("book", 1)], expected=2))
+    partial = catalog.documents()[0]
+    missing = docs[0]["url"] + "/~2"
+    calls = []
+    def getter(url):
+        calls.append(url)
+        if url == missing:
+            raise editorial.PageUnavailable(url, status)
+        return collection([("book", 3)], expected=1)
+    catalog.run_batch(threading.Event(), getter, interval=0)
+    assert calls == [missing, docs[1]["url"]]
+    assert catalog.documents()[0] == partial
+    assert catalog.documents()[1]["complete"]
+    assert len(catalog.candidates()) == 2
+    assert catalog.state("enabled") is True
+    assert catalog.state("retry_after") == now[0] + 900
+    reopened = editorial.Catalog(catalog.path)
+    reopened.request_refresh()
+    reopened.run_batch(threading.Event(), getter, interval=0)
+    assert calls == [missing, docs[1]["url"]]  # перезапуск и кнопка не обходят паузу
+    now[0] += 901
+    reopened.run_batch(threading.Event(), lambda u: collection([("book", 2)], expected=2), interval=0)
+    assert reopened.documents()[0]["complete"]
+    assert reopened.state("deferred_pages") == {}
+    assert reopened.state("enabled") is False
+    assert len(reopened.candidates()) == 3
+
+
+def test_missing_index_keeps_its_page_and_loads_known_documents(tmp_path):
+    catalog = editorial.Catalog(tmp_path / "catalog.db")
+    url = editorial.COLLECTION_INDEX + "/~2"
+    catalog.discover([{"id": "collection:1", "kind": "collection", "url": editorial.BASE + "/selection/1", "title": "Подборка"}])
+    catalog.set_state("collection_index", 2)
+    catalog.set_state("collection_last_task", "document")
+    catalog.set_state("article_index", 0)
+    calls = []
+    def getter(request):
+        calls.append(request)
+        if request == url:
+            raise editorial.PageUnavailable(request, 404)
+        return collection([("book", 1)], expected=1)
+    catalog.run_batch(threading.Event(), getter, interval=0)
+    assert len(calls) == 2 and calls[0] == url
+    assert catalog.state("collection_index") == 2
+    assert catalog.documents()[0]["complete"]
+    assert catalog.state("deferred_pages")[url]["status"] == 404
+
+
+def test_site_limit_still_pauses_all_requests_after_a_missing_page(tmp_path):
+    catalog = editorial.Catalog(tmp_path / "catalog.db")
+    docs = [{"id": f"collection:{i}", "kind": "collection", "url": editorial.BASE + f"/selection/{i}", "title": str(i)} for i in (1, 2)]
+    catalog.discover(docs)
+    catalog.set_state("collection_index", 0)
+    catalog.set_state("article_index", 0)
+    calls = []
+    def getter(url):
+        calls.append(url)
+        if url == docs[0]["url"]:
+            raise editorial.PageUnavailable(url, 404)
+        raise editorial.SitePaused("CAPTCHA")
+    catalog.run_batch(threading.Event(), getter, interval=0)
+    assert calls == [d["url"] for d in docs]
+    assert catalog.state("retry_after") >= editorial.time.time() + 6 * 3600 - 1
+    assert catalog.state("deferred_pages")[docs[0]["url"]]["status"] == 404
+    catalog.run_batch(threading.Event(), getter, interval=0)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status,error", [(404, editorial.PageUnavailable), (410, editorial.PageUnavailable),
+                                         (403, editorial.SitePaused), (429, editorial.SitePaused)])
+def test_fetch_distinguishes_missing_pages_from_site_limits(monkeypatch, status, error):
+    url = editorial.BASE + "/selection/1"
+    def fail(*args, **kwargs):
+        raise editorial.urllib.error.HTTPError(url, status, "test", {}, None)
+    monkeypatch.setattr(editorial.urllib.request, "urlopen", fail)
+    with pytest.raises(error):
+        editorial.fetch(url)
+
+
 def test_document_updates_keep_queue_position(tmp_path):
     catalog = editorial.Catalog(tmp_path / "catalog.db")
     docs = [{"id": f"collection:{i}", "kind": "collection", "url": editorial.BASE + f"/selection/{i}-demo", "title": str(i)} for i in range(1, 4)]

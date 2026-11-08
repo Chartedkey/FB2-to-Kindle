@@ -117,3 +117,17 @@ def test_bulk_is_atomic(tmp_path):
     with pytest.raises(ValueError):
         store.save_many([reading.Entry("Первая", "А", "read"), reading.Entry("", "Б", "read")])
     assert store.all() == []
+
+
+def test_not_interested_excludes_only_book_and_known_refs():
+    hidden = candidate("Скрытая книга", "Любимый автор", ["Детективы"], refs=["work:123"])
+    dismissed = [{k: hidden[k] for k in ("key", "title", "author", "refs")}]
+    choices = [hidden, candidate("Другое название", "Автор", refs=["work:123"]),
+               candidate("Другая книга", "Любимый автор", ["Детективы"]), candidate("Новое", "Другой автор")]
+    prefs = {"authors": ["Любимый автор"], "genres": ["Детективы"]}
+    result = recommendations.rank(choices, [], prefs, dismissed=dismissed)
+    assert [c["title"] for c in result] == ["Другая книга", "Новое"]
+    assert prefs == {"authors": ["Любимый автор"], "genres": ["Детективы"]}
+    assert dismissed[0]["refs"] == ["work:123"]
+    # Кандидат из локальной библиотеки не имеет ссылок LiveLib, но совпадает по книге.
+    assert recommendations.rank([candidate(hidden["title"], hidden["author"])], [], prefs, dismissed=dismissed) == []

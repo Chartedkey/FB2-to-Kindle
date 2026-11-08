@@ -208,3 +208,49 @@ def test_weekly_start_does_not_reset_legacy_partial_catalog(window, monkeypatch)
     assert wait(app, lambda: not tracker.worker.is_alive())
     assert tracker.catalog.documents() == [doc]
     assert tracker.catalog.state('last_cycle') > 0
+
+
+def test_not_interested_replaces_recommendation_and_can_restore_after_restart(window, tmp_path):
+    from PySide6.QtWidgets import QPushButton, QListWidget
+    app, win = window
+    tracker = win.reading_tab
+    books = [{'ref': f'book:{i}', 'title': f'Книга {i}', 'author': f'Автор {i}', 'genres': []}
+             for i in range(1, 14)]
+    tracker.catalog.put({'id': 'collection:1', 'kind': 'collection', 'title': 'Подборка',
+        'url': 'https://www.livelib.ru/selection/1', 'complete': True, 'books': books})
+    planned = reading.Entry(books[0]['title'], books[0]['author'], 'wish', rating=4, note='Сохранить заметку')
+    tracker.save_entry(planned)
+    tracker.store.set_pref('taste', {'authors': ['Любимый автор'], 'genres': ['Детективы']})
+    before_entries = tracker.store.all()
+    before_taste = tracker.store.pref('taste')
+    win.tabs.setCurrentIndex(2)
+    tracker.go('recs')
+    app.processEvents()
+    original = tracker.candidates[0]
+    assert original['key'] == planned.key
+    dismiss = next(b for b in tracker.findChildren(QPushButton) if b.text() == 'Не интересует' and b.isVisible())
+    dismiss.click()
+    app.processEvents()
+    assert original['key'] not in [c['key'] for c in tracker.candidates]
+    assert len(tracker.candidates) == 12 and tracker.candidates[-1]['title'] == 'Книга 13'
+    assert tracker.store.all() == before_entries
+    assert tracker.store.pref('taste') == before_taste
+    reopened = reading.ReadingStore(tracker.store.path)
+    assert reopened.pref('dismissed_recommendations')[0]['refs'] == ['book:1']
+    backup = tmp_path / 'reading-backup.sqlite3'
+    reopened.backup(backup)
+    assert reading.ReadingStore(backup).pref('dismissed_recommendations') == reopened.pref('dismissed_recommendations')
+    tracker.store = reopened
+    tracker.refresh()
+    assert original['key'] not in [c['key'] for c in tracker.candidates]
+    selected = []
+    def restore_in_dialog():
+        dialog = next(d for d in tracker.findChildren(QDialog) if d.isVisible())
+        selected.append(dialog.findChild(QListWidget).currentItem().data(Qt.ItemDataRole.UserRole))
+        next(b for b in dialog.findChildren(QPushButton) if b.text() == 'Вернуть в рекомендации').click()
+    QTimer.singleShot(0, restore_in_dialog)
+    tracker.show_dismissed()
+    assert selected == [original['key']]
+    assert reopened.pref('dismissed_recommendations') == []
+    assert original['key'] in [c['key'] for c in tracker.candidates]
+    assert tracker.store.all() == before_entries
