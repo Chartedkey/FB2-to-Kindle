@@ -42,6 +42,7 @@ def test_http_200_captcha_is_not_empty_catalog(tmp_path):
     assert catalog.documents() == before
     assert catalog.state("retry_after") > 0
     assert "приостановлена" in catalog.state("message")
+    assert catalog.state("active_task")["loading"] is False
     assert catalog.candidates() == []
 
 

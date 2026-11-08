@@ -419,6 +419,9 @@ class Catalog:
                 self.set_state("message", "Прогресс сохранён. Загрузка продолжается небольшими порциями.")
                 self.set_state("retry_after", 0)
             except Exception as e:
+                task = self.state("active_task", {})
+                if task:
+                    self.set_state("active_task", {**task, "loading": False})
                 self.set_state("message", str(e)[:500])
                 self.set_state("retry_after", time.time() + (6 * 3600 if isinstance(e, SitePaused) else 15 * 60))
                 progress()
