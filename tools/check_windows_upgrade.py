@@ -1,4 +1,4 @@
-"""Проверка опубликованной 2.1.0 → тестовая 2.2.0 → ручной возврат.
+"""Проверка опубликованной 2.1.0 → текущая сборка → ручной возврат.
 
 Запускается только в Windows CI. Использует отдельные APPDATA/TEMP и копии
 программ/книг, не обращается к данным пользователя. Код приложения не меняет.
@@ -19,7 +19,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
-from fb2kindle import core, reading  # noqa: E402
+from fb2kindle import core, reading, __version__  # noqa: E402
 from fixtures import make_library  # noqa: E402
 
 
@@ -95,14 +95,14 @@ def main():
     assert not work.exists(), "Для проверки нужна новая рабочая папка"
     work.mkdir(parents=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report = {"checks": [], "success": False}
+    report = {"source_version": "2.1.0", "target_version": __version__, "checks": [], "success": False}
     old_app = new_app = installed = None
     def checked(name, **data):
         report["checks"].append({"name": name, "passed": True, **data})
         print("PASS:", name, flush=True)
     try:
         old_app = extract(args.old_zip.resolve(), work / "Старая версия 2.1.0")
-        new_app = extract(args.new_zip.resolve(), work / "Новая версия 2.2.0")
+        new_app = extract(args.new_zip.resolve(), work / f"Новая версия {__version__}")
         installed = work / "Мои программы" / "FB2 Kindle"
         shutil.copytree(old_app, installed)
         old_exe, new_exe, installed_exe = old_app / "FB2 Kindle.exe", new_app / "FB2 Kindle.exe", installed / "FB2 Kindle.exe"
@@ -150,16 +150,16 @@ def main():
                 break
             time.sleep(1)
         else:
-            raise AssertionError("Обновлённая 2.2.0 не перезапустилась или не создала базу трекера")
+            raise AssertionError(f"Обновлённая {__version__} не перезапустилась или не создала базу трекера")
         stop(installed_exe)
-        screenshot(installed_exe, report_path.parent / "13-upgraded-2.2.0.png", env)
+        screenshot(installed_exe, report_path.parent / f"13-upgraded-{__version__}.png", env)
         assert digest(installed_exe) == digest(new_exe)
         settings_unchanged(data / "settings.json", expected)
         assert digest(data / "conversions.json") == conversions_before
         assert digest(ready) == output_before
         assert list((data / "backups").glob("before-reading-*/settings.json"))
         assert list((data / "backups").glob("before-reading-*/conversions.json"))
-        checked("Переход 2.1.0 → 2.2.0 через настоящий механизм обновления, перезапуск и резервные копии")
+        checked(f"Переход 2.1.0 → {__version__} через настоящий механизм обновления, перезапуск и резервные копии")
         history = reading.ReadingStore()
         entry = reading.Entry.from_book(core.read_metadata(book_path))
         entry.status, entry.rating, entry.precision, entry.finished, entry.note = "read", 5, "year", "2024", "История должна пережить возврат"
@@ -175,10 +175,10 @@ def main():
         settings_unchanged(data / "settings.json", expected)
         assert digest(data / "conversions.json") == conversions_before
         checked("Ручной возврат к отдельной 2.1.0: история, настройки и журнал не потеряны")
-        screenshot(installed_exe, report_path.parent / "16-return-to-2.2.0.png", env)
+        screenshot(installed_exe, report_path.parent / f"16-return-to-{__version__}.png", env)
         assert read_entry(history.path, entry.key)["finished"] == "2024"
         assert read_entry(history.path, entry.key)["note"] == entry.note
-        checked("Повторный запуск 2.2.0 после старой версии сохранил отметку и дату")
+        checked(f"Повторный запуск {__version__} после старой версии сохранил отметку и дату")
         backup = work / "reading-backup.sqlite3"
         history.backup(backup)
         modified = reading.Entry.from_book(core.read_metadata(book_path))

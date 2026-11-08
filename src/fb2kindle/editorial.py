@@ -257,7 +257,11 @@ class Catalog:
 
     def put(self, doc):
         with self.connect() as db:
-            db.execute("INSERT OR REPLACE INTO documents VALUES (?,?)", (doc["id"], json.dumps(doc, ensure_ascii=False)))
+            # REPLACE удаляет строку и меняет rowid: незавершённая подборка уходила
+            # в конец очереди после каждой страницы. UPDATE сохраняет её место.
+            db.execute("INSERT INTO documents (id,payload) VALUES (?,?) "
+                       "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                       (doc["id"], json.dumps(doc, ensure_ascii=False)))
 
     def discover(self, docs):
         known = {d["id"] for d in self.documents()}
@@ -269,10 +273,16 @@ class Catalog:
         found = {}
         by_ref = {}
         for doc in self.documents():
-            for b in doc.get("books", []):
+            # При первом заполнении отдельные проверенные страницы уже полезны.
+            # При обновлении готовой подборки используем прежний полный снимок.
+            books = doc.get("books", [])
+            partial = not books and not doc.get("complete", False)
+            if partial:
+                books = list(doc.get("staged", {}).values())
+            for b in books:
                 key = by_ref.get(b["ref"], identity(b["title"], b["author"]))
                 by_ref[b["ref"]] = key
-                source = {"title": doc["title"], "url": doc["url"], "id": doc["id"]}
+                source = {"title": doc["title"], "url": doc["url"], "id": doc["id"], "partial": partial}
                 if key not in found:
                     found[key] = {**b, "key": key, "sources": [], "refs": []}
                 out = found[key]
@@ -292,21 +302,78 @@ class Catalog:
             self.put(doc)
         self.set_state("collection_index", 1)
         self.set_state("article_index", 1)
+        self.set_state("collection_last_task", "index")
+        self.set_state("article_last_task", "index")
+        self.set_state("active_task", {})
         self.set_state("last_cycle", time.time())
 
-    def step(self, getter=fetch) -> bool:
+    def has_pending_work(self):
+        return (any(not d.get("complete") for d in self.documents()) or
+                any(self.state(k + "_index", 1) for k in ("collection", "article")))
+
+    def request_refresh(self):
+        """Проверить сейчас = продолжить незавершённую загрузку, не сбросить её."""
+        if not self.has_pending_work():
+            self.reset_cycle()
+        elif not self.state("last_cycle", 0):
+            self.set_state("last_cycle", time.time())
+        self.set_state("enabled", True)
+
+    def progress(self):
+        docs = self.documents()
+        task = self.state("active_task", {})
+        doc = next((d for d in docs if d["id"] == task.get("id")), None)
+        detail = ""
+        if task.get("type") == "index":
+            kind = task["kind"]
+            last = self.state(kind + "_index_last", 0)
+            detail = f"Список {'подборок' if kind == 'collection' else 'статей'}: страница {task['page']}"
+            if last:
+                detail += f" из {last}"
+            detail += "."
+        elif doc:
+            if doc.get("complete"):
+                detail = f"Сверено: {doc['title']} · книг: {len(doc.get('books', []))}."
+            else:
+                count = len(doc.get("staged", {}))
+                total = doc.get("expected")
+                detail = f"Подборка: {doc['title']}\nПолучено книг: {count}"
+                if total is not None:
+                    detail += f" из {total}"
+                detail += f" · страниц загружено: {max(0, doc.get('page', 1) - 1)}."
+                if task.get("loading"):
+                    detail += f" Загружается страница {task['page']}."
+        return {"found": len(docs), "complete": sum(bool(d.get("complete")) for d in docs),
+                "partial": sum(bool(d.get("staged")) and not d.get("complete") for d in docs),
+                "detail": detail}
+
+    def step(self, getter=fetch, progress=lambda: None) -> bool:
         for kind, base in (("collection", COLLECTION_INDEX), ("article", ARTICLE_INDEX)):
             # Подборки загружаются раньше большого архива статей.
             pending = next((d for d in self.documents() if d["kind"] == kind and not d.get("complete")), None)
-            if pending:
-                self._document_step(pending, getter)
-                return True
             page = self.state(kind + "_index", 1)
+            index_started = self.state(kind + "_index") is not None
+            # Чередуем обнаружение следующих материалов и загрузку книг.
+            # Сами документы остаются в стабильной очереди до завершения.
+            if pending and (not page or not index_started or self.state(kind + "_last_task", "index") == "index"):
+                task = {"type": "document", "id": pending["id"], "page": pending.get("page", 1), "loading": True}
+                self.set_state("active_task", task)
+                progress()
+                self._document_step(pending, getter)
+                self.set_state("active_task", {**task, "loading": False})
+                self.set_state(kind + "_last_task", "document")
+                return True
             if page:
                 url = base + (f"/~{page}" if page > 1 else "")
+                task = {"type": "index", "kind": kind, "page": page, "loading": True}
+                self.set_state("active_task", task)
+                progress()
                 docs, last = parse_index(getter(url), kind)
                 self.discover(docs)
                 self.set_state(kind + "_index", page + 1 if page < last else 0)
+                self.set_state(kind + "_index_last", last)
+                self.set_state(kind + "_last_task", "index")
+                self.set_state("active_task", {**task, "loading": False})
                 return True
         return False
 
@@ -343,7 +410,7 @@ class Catalog:
                 return
             self.set_state("last_request", time.time())
             try:
-                if not self.step(getter):
+                if not self.step(getter, progress):
                     self.set_state("message", "Все обнаруженные материалы сверены. Полнота всего архива сайта не гарантируется.")
                     self.set_state("last_complete", time.time())
                     self.set_state("enabled", False)

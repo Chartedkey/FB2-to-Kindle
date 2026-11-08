@@ -80,7 +80,9 @@ class ReadingTab(QWidget):
         self.nav.setCurrentRow(0)
         self.refresh()
         self.network_timer = QTimer(self)
-        self.network_timer.setInterval(60_000)
+        # Порции продолжаются без лишнего минутного простоя. Интервал между
+        # самими запросами по-прежнему ограничен в Catalog.run_batch.
+        self.network_timer.setInterval(10_000)
         self.network_timer.timeout.connect(self.network_tick)
         self.network_timer.start()
         QTimer.singleShot(5000, self.network_tick)
@@ -508,6 +510,8 @@ class ReadingTab(QWidget):
             link.setWordWrap(True)
             link.setOpenExternalLinks(True)
             lay.addWidget(link)
+            if source.get("partial"):
+                lay.addWidget(muted("Подборка загружена частично; остальные книги ещё загружаются.", 8.5))
         row = QHBoxLayout()
         row.addWidget(button("Найти в библиотеке", primary=True, slot=lambda: self.find_in_library(c["title"], c["author"])))
         row.addWidget(button("Уже читал…", slot=lambda: self.mark_candidate(c, "read")))
@@ -585,11 +589,13 @@ class ReadingTab(QWidget):
         if self.catalog is None:
             lay.addWidget(plain("Каталог LiveLib недоступен. История чтения и подбор из библиотеки работают. Файл каталога не изменён.\n" + self.catalog_error))
             return c
-        docs = self.catalog.documents()
-        full = sum(bool(d.get("complete")) for d in docs)
+        progress = self.catalog.progress()
         books = len(self.catalog.candidates())
-        self.network_status = plain(f"Обнаружено материалов: {len(docs)} · сверено: {full} · книг в каталоге: {books}")
+        self.network_status = plain(f"Обнаружено материалов: {progress['found']} · сверено: {progress['complete']} · "
+                                    f"частично загружено: {progress['partial']} · книг в каталоге: {books}")
         lay.addWidget(self.network_status)
+        if progress["detail"]:
+            lay.addWidget(plain(progress["detail"]))
         message = self.catalog.state("message", "Загрузите редакционные материалы. История чтения никуда не отправляется.")
         lay.addWidget(plain(message))
         retry = self.catalog.state("retry_after", 0)
@@ -627,8 +633,7 @@ class ReadingTab(QWidget):
         if self.catalog.state("retry_after", 0) > time.time():
             self.main.notify("LiveLib или сеть требуют паузы. Сохранённый каталог доступен.", 10000)
             return
-        self.catalog.reset_cycle()
-        self.catalog.set_state("enabled", True)
+        self.catalog.request_refresh()
         self.network_tick()
         self.refresh()
 
@@ -638,10 +643,12 @@ class ReadingTab(QWidget):
         if self.catalog.state("retry_after", 0) > time.time():
             return
         last_cycle = self.catalog.state("last_cycle", 0)
-        cycle_finished = not last_cycle or self.catalog.state("last_complete", 0) >= last_cycle
-        if self.catalog.state("weekly", False) and cycle_finished and time.time() - last_cycle >= editorial.WEEK:
-            self.catalog.reset_cycle()
+        if self.catalog.state("weekly", False) and not last_cycle:
+            self.catalog.set_state("last_cycle", time.time())
             self.catalog.set_state("enabled", True)
+        elif (self.catalog.state("weekly", False) and not self.catalog.has_pending_work()
+              and time.time() - last_cycle >= editorial.WEEK):
+            self.catalog.request_refresh()
         if not self.catalog.state("enabled", False):
             return
         self.cancel = threading.Event()
@@ -657,7 +664,9 @@ class ReadingTab(QWidget):
 
     def network_progress(self):
         if not self.closing and self.view == "recs":
+            position = self.scroll.verticalScrollBar().value()
             self.refresh()
+            QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(position) if not self.closing else None)
 
     def shutdown(self):
         self.closing = True

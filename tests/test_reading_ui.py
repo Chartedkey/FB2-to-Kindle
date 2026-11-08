@@ -166,3 +166,45 @@ def test_covers_in_overview_list_and_recommendations(window):
     tracker.go('recs')
     app.processEvents()
     assert any(l.isVisible() for l in tracker.findChildren(QLabel, 'readingCover'))
+
+
+def test_partial_recommendations_and_check_now_preserve_progress(window, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+    app, win = window
+    tracker = win.reading_tab
+    doc = {'id': 'collection:10', 'kind': 'collection', 'title': 'Тестовая подборка',
+           'url': 'https://www.livelib.ru/selection/10', 'complete': False, 'page': 2,
+           'expected': 100, 'books': [], 'staged': {'book:500': {'ref': 'book:500',
+               'title': 'Полученная книга', 'author': 'Новый автор', 'genres': [],
+               'url': 'https://www.livelib.ru/book/500'}}}
+    tracker.catalog.put(doc)
+    tracker.catalog.set_state('active_task', {'type': 'document', 'id': doc['id'], 'page': 1, 'loading': False})
+    win.tabs.setCurrentIndex(2)
+    tracker.go('recs')
+    app.processEvents()
+    assert [c['title'] for c in tracker.candidates] == ['Полученная книга']
+    assert 'частично загружено: 1' in tracker.network_status.text()
+    labels = [label.text() for label in tracker.findChildren(QLabel) if label.isVisible()]
+    assert any('1 из 100' in text for text in labels)
+    assert any('Подборка загружена частично' in text for text in labels)
+    monkeypatch.setattr(tracker, 'network_tick', lambda: None)
+    for _ in range(3):
+        tracker.check_now()
+    assert tracker.catalog.documents() == [doc]
+    assert tracker.catalog.state('enabled') is True
+
+
+def test_weekly_start_does_not_reset_legacy_partial_catalog(window, monkeypatch):
+    app, win = window
+    tracker = win.reading_tab
+    doc = {'id': 'collection:10', 'kind': 'collection', 'title': 'Сохранённая',
+           'url': 'https://www.livelib.ru/selection/10', 'complete': False, 'page': 2,
+           'expected': 100, 'books': [], 'staged': {'book:500': {'ref': 'book:500',
+               'title': 'Книга', 'author': 'Автор', 'genres': []}}}
+    tracker.catalog.put(doc)
+    tracker.catalog.set_state('weekly', True)
+    monkeypatch.setattr(tracker.catalog, 'run_batch', lambda *a, **k: None)
+    tracker.network_tick()
+    assert wait(app, lambda: not tracker.worker.is_alive())
+    assert tracker.catalog.documents() == [doc]
+    assert tracker.catalog.state('last_cycle') > 0

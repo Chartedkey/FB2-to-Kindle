@@ -130,6 +130,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Не удалось скачать исходный выпуск 2.1.0" }
           python tools/check_windows_upgrade.py --old-zip "previous-release/FB2-Kindle-2.1.0-windows.zip" --new-zip "release/FB2-Kindle-$env:VERSION-windows.zip" --work-dir "$env:RUNNER_TEMP/FB2-upgrade-check" --report "screenshots/upgrade-report.json"
           if ($LASTEXITCODE -ne 0) { throw "Проверка обновления и возврата не пройдена" }
+          gh release download v2.2.0 --repo Chartedkey/FB2-to-Kindle --pattern "FB2-Kindle-2.2.0-windows.zip" --dir previous-release
+          if ($LASTEXITCODE -ne 0) { throw "Не удалось скачать выпуск 2.2.0" }
+          python tools/check_windows_catalog_upgrade.py --old-zip "previous-release/FB2-Kindle-2.2.0-windows.zip" --new-zip "release/FB2-Kindle-$env:VERSION-windows.zip" --work-dir "$env:RUNNER_TEMP/FB2-catalog-upgrade-check" --report "screenshots/catalog-upgrade-report.json"
+          if ($LASTEXITCODE -ne 0) { throw "Прогресс каталога не пережил обновление с 2.2.0" }
 
       - uses: actions/upload-artifact@v4
         if: always()
