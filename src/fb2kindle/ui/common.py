@@ -89,13 +89,28 @@ QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
 QScrollBar::handle:horizontal { background: #C8C8C8; border-radius: 3px; min-width: 30px; }
 QSplitter::handle { background: transparent; }
 QToolTip { background: #FFFFFF; color: #1B1B1B; border: 1px solid #D1D1D1; padding: 4px 6px; }
-QCheckBox { spacing: 8px; }
+QCheckBox, QRadioButton { spacing: 8px; }
+QCheckBox::indicator, QRadioButton::indicator, QListView::indicator, QTreeView::indicator {
+    width: 16px; height: 16px; background: #FFFFFF; border: 1px solid #7A7A7A; image: none;
+}
+QCheckBox::indicator, QListView::indicator, QTreeView::indicator { border-radius: 3px; }
+QRadioButton::indicator { border-radius: 9px; }
+QCheckBox::indicator:checked, QListView::indicator:checked, QTreeView::indicator:checked { image: url("%CHECK%"); }
+QRadioButton::indicator:checked { image: url("%DOT%"); }
+QCheckBox::indicator:indeterminate, QListView::indicator:indeterminate, QTreeView::indicator:indeterminate { image: url("%MIXED%"); }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover, QListView::indicator:hover, QTreeView::indicator:hover { border-color: #1B1B1B; }
+QCheckBox::indicator:focus, QRadioButton::indicator:focus { border-color: #1B1B1B; }
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled, QListView::indicator:disabled, QTreeView::indicator:disabled { border-color: #C0C0C0; }
+QCheckBox:disabled, QRadioButton:disabled { color: #8A8A8A; }
 """
 
 
 def stylesheet() -> str:
-    arrow = (core.RES_DIR / "assets" / "arrow-down.png").as_posix()
-    return QSS.replace("%ARROW%", arrow)
+    style = QSS
+    for token, filename in (("ARROW", "arrow-down.png"), ("CHECK", "indicator-check.png"),
+                            ("DOT", "indicator-dot.png"), ("MIXED", "indicator-mixed.png")):
+        style = style.replace(f"%{token}%", (core.RES_DIR / "assets" / filename).as_posix())
+    return style
 
 
 class Bridge(QObject):
