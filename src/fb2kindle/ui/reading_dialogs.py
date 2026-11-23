@@ -32,10 +32,12 @@ def plain(text):
 
 
 class EntryDialog(QDialog):
-    def __init__(self, entry: Entry | None = None, parent=None, read=False):
+    def __init__(self, entry: Entry | None = None, parent=None, read=False, suggestions=None):
         super().__init__(parent)
         setup_dialog(self, "Моё чтение")
-        self.entry = deepcopy(entry) if entry else None
+        self.entry = None
+        self.suggest_books = suggestions
+        self.selected_book = None
         root = QVBoxLayout(self)
         root.setSpacing(12)
         root.addWidget(bold("Отметка о книге" if entry else "Добавить книгу", 14))
@@ -45,17 +47,30 @@ class EntryDialog(QDialog):
         self.title.setReadOnly(entry is not None)
         self.author.setReadOnly(entry is not None)
         form.addRow("Название", self.title)
+        self.suggestions = QListWidget()
+        self.suggestions.setStyleSheet(
+            "QListWidget { background:white; border:1px solid #D1D1D1; border-radius:6px; } "
+            "QListWidget::item { padding:3px 7px; } "
+            "QListWidget::item:selected { color:#1B1B1B; }")
+        self.suggestions.setAccessibleName("Книги из библиотеки")
+        self.suggestions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.suggestions.hide()
+        form.addRow(self.suggestions)
+        self.matches = []
+        self.title.textChanged.connect(self.update_suggestions)
+        self.suggestions.itemClicked.connect(self.select_suggestion)
+        self.suggestions.itemActivated.connect(self.select_suggestion)
         form.addRow("Автор", self.author)
         self.status = QComboBox()
         for k, label in STATUSES.items():
             self.status.addItem(label, k)
-        self.status.setCurrentIndex(self.status.findData("read" if read or entry is None else entry.status))
+        if read:
+            self.status.setEnabled(False)
         form.addRow("Статус", self.status)
         self.rating = QComboBox()
         self.rating.addItem("Без оценки", 0)
         for n in range(1, 6):
             self.rating.addItem("★" * n + f"   {n} / 5", n)
-        self.rating.setCurrentIndex(entry.rating if entry else 0)
         form.addRow("Моя оценка", self.rating)
         root.addLayout(form)
         self.date_box = QWidget()
@@ -64,7 +79,6 @@ class EntryDialog(QDialog):
         self.precision = QComboBox()
         for k, label in PRECISIONS.items():
             self.precision.addItem(label, k)
-        self.precision.setCurrentIndex(self.precision.findData(entry.precision if entry else "unknown"))
         dates.addRow("Когда прочитано", self.precision)
         self.day = QDateEdit(QDate.currentDate())
         self.day.setCalendarPopup(True)
@@ -84,14 +98,6 @@ class EntryDialog(QDialog):
         self.month_year.setRange(1, date.today().year)
         self.month_year.setValue(date.today().year)
         ml.addWidget(self.month_year)
-        if entry and entry.finished:
-            parts = list(map(int, entry.finished.split("-")))
-            self.year.setValue(parts[0])
-            self.month_year.setValue(parts[0])
-            if len(parts) > 1:
-                self.month.setCurrentIndex(parts[1] - 1)
-            if len(parts) == 3:
-                self.day.setDate(QDate(*parts))
         dates.addRow(self.day)
         dates.addRow(self.month_box)
         dates.addRow(self.year)
@@ -99,7 +105,7 @@ class EntryDialog(QDialog):
         dates.addRow(self.date_hint)
         root.addWidget(self.date_box)
         root.addWidget(muted("Заметка · необязательно"))
-        self.note = QPlainTextEdit(entry.note if entry else "")
+        self.note = QPlainTextEdit()
         self.note.setMaximumHeight(110)
         root.addWidget(self.note)
         self.error = plain("")
@@ -114,7 +120,54 @@ class EntryDialog(QDialog):
         root.addWidget(buttons)
         self.status.currentIndexChanged.connect(self.update_date)
         self.precision.currentIndexChanged.connect(self.update_date)
+        self.load_entry(entry, read=read)
+
+    def load_entry(self, entry, read=False):
+        self.entry = deepcopy(entry) if entry else None
+        self.status.setCurrentIndex(self.status.findData("read" if read or entry is None else entry.status))
+        self.rating.setCurrentIndex(entry.rating if entry else 0)
+        self.precision.setCurrentIndex(self.precision.findData(entry.precision if entry else "unknown"))
+        self.note.setPlainText(entry.note if entry else "")
+        if entry and entry.finished:
+            parts = list(map(int, entry.finished.split("-")))
+            self.year.setValue(parts[0])
+            self.month_year.setValue(parts[0])
+            if len(parts) > 1:
+                self.month.setCurrentIndex(parts[1] - 1)
+            if len(parts) == 3:
+                self.day.setDate(QDate(*parts))
         self.update_date()
+
+    def update_suggestions(self, *_):
+        if self.suggest_books is None:
+            return
+        if self.selected_book and self.title.text().strip() == self.selected_book.title:
+            return
+        self.entry = None
+        self.selected_book = None
+        self.matches = self.suggest_books(self.title.text())
+        self.suggestions.clear()
+        for candidate, _ in self.matches:
+            text = f"{candidate.title}  ·  {candidate.author}"
+            item = QListWidgetItem(text)
+            item.setToolTip(text)
+            self.suggestions.addItem(item)
+        if self.matches:
+            self.suggestions.setFixedHeight(min(len(self.matches), 4) * self.suggestions.sizeHintForRow(0) + 6)
+        self.suggestions.setVisible(bool(self.matches))
+
+    def select_suggestion(self, item):
+        candidate, existing = self.matches[self.suggestions.row(item)]
+        if existing:
+            self.load_entry(existing)
+            self.entry.paths = list(dict.fromkeys(existing.paths + candidate.paths))
+        else:
+            self.entry = deepcopy(candidate)
+        self.selected_book = candidate
+        self.title.setText(candidate.title)
+        self.author.setText(candidate.author)
+        self.suggestions.hide()
+        self.author.setFocus()
 
     def update_date(self, *_):
         precision = self.precision.currentData()
@@ -128,7 +181,11 @@ class EntryDialog(QDialog):
             "day": "Дата завершения книги; её можно исправить позже."}[precision])
 
     def accept(self):
-        e = deepcopy(self.entry) if self.entry else Entry(self.title.text().strip(), self.author.text().strip())
+        title, author = self.title.text().strip(), self.author.text().strip()
+        entry = self.entry
+        if self.selected_book and author != self.selected_book.author:
+            entry = None
+        e = deepcopy(entry) if entry else Entry(title, author)
         e.status = self.status.currentData()
         e.rating = self.rating.currentData()
         e.precision = self.precision.currentData()

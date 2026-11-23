@@ -6,13 +6,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPainter, QPalette, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
-                               QStackedWidget, QToolButton, QMenu, QVBoxLayout, QWidget)
+                               QSpinBox, QStackedWidget, QToolButton, QMenu, QVBoxLayout, QWidget)
 
-from .. import core, library, wiki
+from .. import core, library, online_cycles, wiki
 from .common import (avatar, bold, button, card, cover_placeholder, flags, hline, muted, rounded, set_primary,
                      show_in_explorer, style_chip, ui_call)
 
@@ -84,6 +84,14 @@ class AuthorRow(QWidget):
             self.sub.setStyleSheet("color:#0E5C0E;")
 
 
+def cycle_key(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+def cycle_number_label(number: int) -> str:
+    return f"Книга № {number}" if number else "Номер неизвестен"
+
+
 class BookRow(QWidget):
     def __init__(self, tab: "LibraryTab", book: core.Book, group: library.AuthorGroup):
         super().__init__()
@@ -101,7 +109,16 @@ class BookRow(QWidget):
         f.setWeight(f.Weight.DemiBold)
         self.title.setFont(f)
         sub = " · ".join(x for x in (book.series_text, book.year, book.genre_text) if x)
+        if tab.by_cycle or tab.btn_author_cycles.isChecked():
+            name, number, source = tab.cycle_info(book)
+            sub = " · ".join((cycle_number_label(number), group.name, source))
+            if not name:
+                sub = group.name
+            elif number and not tab.by_cycle:
+                self.title.setText(f"{number}) {book.display_title}")
+                sub = " · ".join(x for x in (book.year, book.genre_text, source) if x)
         self.sub = ElidedLabel(sub or Path(book.path).name)
+        self.sub.setToolTip(sub)
         self.sub.setProperty("muted", True)
         col.addWidget(self.title)
         col.addWidget(self.sub)
@@ -117,8 +134,21 @@ class BookRow(QWidget):
         self.action.setFixedWidth(150)
         self.action.setCursor(Qt.CursorShape.PointingHandCursor)
         self.action.clicked.connect(lambda: tab.book_action(self.book, self.group))
-        lay.addWidget(self.action)
+        self.action.setStyleSheet("padding:3px 8px;")
+        actions = QVBoxLayout()
+        actions.setSpacing(2)
+        actions.addWidget(self.action)
+        self.read_action = button("Прочитал", slot=self.mark_read)
+        self.read_action.setStyleSheet("padding:3px 8px;")
+        self.read_action.setToolTip("Отметить прочтение и при желании поставить оценку")
+        actions.addWidget(self.read_action)
+        lay.addLayout(actions)
         self.refresh()
+
+    def mark_read(self):
+        tracker = getattr(self.tab.main, "reading_tab", None)
+        if tracker:
+            tracker.edit_book(self.book, self.group.name, read=True)
 
     def refresh(self):
         st = self.tab.status_of(self.book)
@@ -137,6 +167,8 @@ class BookRow(QWidget):
         entry = tracker.entry_for_book(self.book, self.group.name) if tracker else None
         self.reading_chip.setText((STATUSES[entry.status] + (" · " + "★" * entry.rating if entry.rating else "")) if entry else "")
         self.reading_chip.setVisible(entry is not None)
+        self.read_action.setVisible(tracker is not None and not self.book.error)
+        self.read_action.setText("Прочитал ✓" if entry and entry.status == "read" else "Прочитал")
 
 
 def action_for(status: str) -> tuple[str, bool, bool]:
@@ -151,6 +183,8 @@ def action_for(status: str) -> tuple[str, bool, bool]:
 
 
 class LibraryTab(QWidget):
+    books_loaded = Signal()
+
     def __init__(self, main):
         super().__init__()
         self.setObjectName("page")
@@ -165,6 +199,16 @@ class LibraryTab(QWidget):
         self.prev: dict[str, str] = {}
         self.checked: set[str] = set()
         self.current_key: str | None = None
+        self.by_cycle = False
+        self.cycle_key = None
+        self.cycles = {}
+        self.cycle_error = ""
+        self.cycle_searches = set()
+        try:
+            self.cycle_overrides = library.CycleOverrides()
+        except (OSError, ValueError) as err:
+            self.cycle_overrides = None
+            self.cycle_error = str(err)
         self.current_book: core.Book | None = None
         self.filter = "all"
         self.author_rows: dict[str, AuthorRow] = {}
@@ -282,7 +326,8 @@ class LibraryTab(QWidget):
         split.setHandleWidth(10)
         split.addWidget(self._build_authors())
         split.addWidget(self._build_books())
-        split.addWidget(self._build_details())
+        self.details = self._build_details()
+        split.addWidget(self.details)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 0)
@@ -308,6 +353,10 @@ class LibraryTab(QWidget):
         lay = QVBoxLayout(c)
         lay.setContentsMargins(10, 12, 10, 8)
         lay.setSpacing(8)
+        self.group_mode = QComboBox()
+        self.group_mode.addItems(["По авторам", "По циклам"])
+        self.group_mode.currentIndexChanged.connect(self.change_group_mode)
+        lay.addWidget(self.group_mode)
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("Поиск: автор или книга")
         self.ed_search.setClearButtonEnabled(True)
@@ -316,6 +365,9 @@ class LibraryTab(QWidget):
         self.btn_reading_author = button("Все книги автора", slot=self.search_reading_author)
         self.btn_reading_author.setVisible(False)
         lay.addWidget(self.btn_reading_author)
+        self.author_controls = QWidget()
+        author_layout = QVBoxLayout(self.author_controls)
+        author_layout.setContentsMargins(0, 0, 0, 0)
         src = QHBoxLayout()
         src.addWidget(muted("Имя автора:"))
         from .settings_dialog import Choice
@@ -324,7 +376,7 @@ class LibraryTab(QWidget):
                                     "Фамилию из нескольких слов отделите запятой: «Ле Гуин, Урсула».")
         self.cb_author_src.currentIndexChanged.connect(self._author_source_changed)
         src.addWidget(self.cb_author_src, 1)
-        lay.addLayout(src)
+        author_layout.addLayout(src)
         hdr = QHBoxLayout()
         self.ch_all = QCheckBox("Авторы: 0")
         self.ch_all.setToolTip("Выбрать всех авторов в списке (с учётом поиска и фильтра)")
@@ -332,7 +384,8 @@ class LibraryTab(QWidget):
         hdr.addWidget(self.ch_all)
         hdr.addStretch(1)
         hdr.addWidget(muted("готово / всего", 8.5))
-        lay.addLayout(hdr)
+        author_layout.addLayout(hdr)
+        lay.addWidget(self.author_controls)
         self.selbar = QFrame()
         self.selbar.setObjectName("selbar")
         sl = QVBoxLayout(self.selbar)
@@ -347,6 +400,7 @@ class LibraryTab(QWidget):
         self.selbar.setVisible(False)
         lay.addWidget(self.selbar)
         self.lst_authors = QListWidget()
+        self.lst_authors.setStyleSheet("QListWidget::item:selected { color:#1B1B1B; }")
         self.lst_authors.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.lst_authors.currentItemChanged.connect(self._on_author_item)
         lay.addWidget(self.lst_authors, 1)
@@ -400,7 +454,20 @@ class LibraryTab(QWidget):
             self.filter_buttons[key] = b
             bar.addWidget(b)
         bar.addStretch(1)
+        self.btn_author_cycles = button("Циклы", chip=True, slot=self.rebuild_books)
+        self.btn_author_cycles.setToolTip("Сгруппировать книги автора по циклам")
+        bar.addWidget(self.btn_author_cycles)
         lay.addLayout(bar)
+        self.cycle_tools = QWidget()
+        cycle_layout = QHBoxLayout(self.cycle_tools)
+        cycle_layout.setContentsMargins(18, 0, 18, 8)
+        cycle_layout.addWidget(muted("Серия в FB2 может быть издательской."))
+        cycle_layout.addStretch(1)
+        self.btn_cycle_search = button("Найти циклы онлайн", slot=self.find_author_cycles)
+        self.btn_cycle_search.setToolTip("Поиск в Викиданных по имени автора. Названия из библиотеки сопоставляются на компьютере.")
+        cycle_layout.addWidget(self.btn_cycle_search)
+        lay.addWidget(self.cycle_tools)
+        self.cycle_tools.hide()
         self.lst_books = QListWidget()
         self.lst_books.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.lst_books.setContentsMargins(8, 0, 8, 0)
@@ -440,16 +507,20 @@ class LibraryTab(QWidget):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(5)
         self.det_fields = {}
-        for key, label in (("series", "Серия"), ("year", "Год"), ("genre", "Жанр"), ("fb2", "FB2"), ("kindle", "Kindle")):
+        for key, label in (("series", "Серия FB2"), ("cycle", "Цикл"), ("year", "Год"), ("genre", "Жанр"), ("fb2", "FB2"), ("kindle", "Kindle")):
             if key in ("fb2", "kindle"):
                 v = ElidedLabel("")      # длинные пути без пробелов не переносятся — обрезаем
             else:
                 v = QLabel("")
                 v.setWordWrap(True)
+                v.setTextFormat(Qt.TextFormat.PlainText)
                 v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(muted(label), v)
             self.det_fields[key] = v
         lay.addLayout(form)
+        self.btn_cycle = button("Исправить цикл и номер…", slot=self.edit_cycle)
+        self.btn_cycle.setEnabled(False)
+        lay.addWidget(self.btn_cycle)
         lay.addSpacing(8)
         self.det_ann_label = bold("", 9)
         self.det_ann_label.setStyleSheet("color:#5F5F5F;")
@@ -568,6 +639,8 @@ class LibraryTab(QWidget):
         if self.current_key not in self.by_key:
             self.current_key = groups[0].key if groups else None
             self.current_book = None
+            self.reset_author_cycle()
+        self.rebuild_cycles()
         self.rebuild_authors()
         self.update_summary()
         if not groups:
@@ -575,6 +648,7 @@ class LibraryTab(QWidget):
         tracker = getattr(self.main, "reading_tab", None)
         if tracker:
             tracker.refresh()
+        self.books_loaded.emit()
         if self._reading_search:
             self.apply_reading_search()
 
@@ -597,7 +671,7 @@ class LibraryTab(QWidget):
             self.author_rows[g.key].update_counts(*self.counts(g))
         if self.current_book and str(self.current_book.path) == path:
             self._refresh_detail_status()
-        if g and g.key == self.current_key:
+        if self.by_cycle or (g and g.key == self.current_key):
             self._refresh_missing_button()
         self.update_summary()
         self._refresh_selbar()
@@ -605,14 +679,23 @@ class LibraryTab(QWidget):
     def update_summary(self):
         all_st = list(self.status.values())
         done = sum(s == "done" for s in all_st)
-        none = sum(s in ("none", "queued", "run", "error") for s in all_st)
+        none = sum(matches_filter(s, "none") for s in all_st)
         changed = sum(s == "changed" for s in all_st)
         if self.groups:
             self.lbl_summary.setText(f"Авторов: {len(self.groups)} · книг: {len(all_st)} · готово {done} · "
                                      f"не сконвертировано {none} · FB2 изменился {changed}")
-        counts = {"all": len(all_st), "none": none, "done": done, "changed": changed}
+        self.update_filter_counts()
+
+    def update_filter_counts(self):
+        if self.by_cycle:
+            books = self.cycles.get(self.cycle_key, ("", []))[1]
+            statuses = [self.status_of(b) for b in books if self.matches_cycle_search(b)]
+        else:
+            group = self.by_key.get(self.current_key)
+            statuses = [self.status_of(b) for b in group.books] if group else []
         for key, text in FILTERS:
-            self.filter_buttons[key].setText(f"{text} · {counts[key]}")
+            count = sum(matches_filter(status, key) for status in statuses)
+            self.filter_buttons[key].setText(f"{text} · {count}")
 
     def on_external_conversion(self, src: Path, out: Path):
         """Книгу сконвертировали на вкладке «Конвертация» — обновить статус, если она есть в библиотеке."""
@@ -636,6 +719,9 @@ class LibraryTab(QWidget):
         return res
 
     def rebuild_authors(self):
+        if self.by_cycle:
+            self.show_cycles()
+            return
         groups = self.visible_groups()
         self.lst_authors.blockSignals(True)
         self.lst_authors.clear()
@@ -668,11 +754,16 @@ class LibraryTab(QWidget):
 
     def _on_author_item(self, cur, _prev):
         if cur is not None:
-            self.show_author(cur.data(Qt.ItemDataRole.UserRole))
+            key = cur.data(Qt.ItemDataRole.UserRole)
+            if self.by_cycle:
+                self.show_cycle(key)
+            else:
+                self.show_author(key)
 
     def show_author(self, key: str | None):
         if key != self.current_key:
             self.current_book = None
+            self.reset_author_cycle()
         self.current_key = key
         g = self.by_key.get(key) if key else None
         if not g:
@@ -732,7 +823,7 @@ class LibraryTab(QWidget):
 
     def _refresh_selbar(self):
         groups = [self.by_key[k] for k in self.checked if k in self.by_key]
-        self.selbar.setVisible(bool(groups))
+        self.selbar.setVisible(bool(groups) and not self.by_cycle)
         n = sum(len(self._missing_books(g)) for g in groups)
         self.lbl_sel.setText(f"Выбрано авторов: {len(groups)} · не готово книг: {n}")
         self.btn_conv_sel.setEnabled(n > 0)
@@ -744,6 +835,191 @@ class LibraryTab(QWidget):
         if self.enqueue(items):
             self.clear_checked()
 
+    def cycle_info(self, book):
+        if self.cycle_overrides:
+            name, number, edited = self.cycle_overrides.for_book(book)
+            if edited:
+                return name, number, "Вручную"
+        group = self.group_of.get(str(book.path))
+        if group and (not book.first_author or library.norm_words(book.first_author) == library.norm_words(group.name)):
+            matches = self.wiki_cache.get("cycles:" + group.key) or {}
+            match = matches.get(library.norm_title(book.display_title))
+            if match:
+                return *match, "Викиданные"
+        return book.series, book.cycle_number, "Из FB2"
+
+    def find_author_cycles(self):
+        group = self.by_key.get(self.current_key)
+        if not group or group.key in self.cycle_searches:
+            return
+        self.cycle_searches.add(group.key)
+        self.btn_cycle_search.setEnabled(False)
+        self.main.notify(f"Ищу циклы автора «{group.name}» в Викиданных…")
+        cache = self.wiki_cache
+
+        def finished(matches, error):
+            self.cycle_searches.discard(group.key)
+            if cache is not self.wiki_cache:
+                return
+            if error:
+                self.main.notify("Не удалось получить циклы из Викиданных. Попробуйте позже.")
+                self.btn_cycle_search.setEnabled(self.current_key not in self.cycle_searches)
+                return
+            # Пустой результат не заменяет ранее найденные сведения.
+            if matches:
+                cache.put("cycles:" + group.key, matches)
+                self.rebuild_cycles()
+            if self.by_cycle:
+                self.show_cycles()
+            else:
+                self.rebuild_books()
+            current = self.by_key.get(group.key)
+            count = sum(self.cycle_info(b)[2] == "Викиданные" for b in current.books) if current and matches else 0
+            self.main.notify(f"Книг, сопоставленных с циклами в Викиданных: {count}" if count
+                             else "В Викиданных не найдено однозначных совпадений для книг автора.")
+
+        def work():
+            try:
+                matches = online_cycles.find_cycles(group.name)
+            except (OSError, ValueError, KeyError, TypeError):
+                ui_call(lambda: finished({}, True))
+            else:
+                ui_call(lambda: finished(matches, False))
+
+        self.pool.submit(work)
+
+    def group_cycles(self, books):
+        groups = {}
+        for book in books:
+            name, _, _ = self.cycle_info(book)
+            groups.setdefault(cycle_key(name), (name or "Без цикла", []))[1].append(book)
+
+        def order(book):
+            _, number, _ = self.cycle_info(book)
+            return (number == 0, number, library.norm_title(book.display_title))
+
+        for key, (_, members) in groups.items():
+            if key:
+                members.sort(key=order)
+        return groups
+
+    def rebuild_cycles(self):
+        self.cycles = self.group_cycles(book for group in self.groups for book in group.books)
+
+    def reset_author_cycle(self):
+        self.btn_author_cycles.setChecked(False)
+
+    def change_group_mode(self, index):
+        self.by_cycle = index == 1
+        self.author_controls.setVisible(not self.by_cycle)
+        self.ed_search.setPlaceholderText("Поиск: цикл, автор или книга" if self.by_cycle else "Поиск: автор или книга")
+        self._refresh_selbar()
+        if self.by_cycle and self.current_book:
+            self.cycle_key = cycle_key(self.cycle_info(self.current_book)[0])
+        if not self.by_cycle:
+            self.reset_author_cycle()
+            self.current_book = None
+            self.book_rows.clear()
+        self.rebuild_authors()
+        self.update_filter_counts()
+
+    def matches_cycle_search(self, book):
+        query = self.ed_search.text().strip().casefold().replace("ё", "е")
+        name, _, _ = self.cycle_info(book)
+        group = self.group_of[str(book.path)]
+        return any(query in text.casefold().replace("ё", "е")
+                   for text in (name or "Без цикла", group.name, group.sort_name, book.display_title))
+
+    def show_cycles(self):
+        self.lst_authors.blockSignals(True)
+        self.lst_authors.clear()
+        self.author_rows.clear()
+        current = None
+        for key in sorted(self.cycles, key=lambda k: (not k, k)):
+            name, books = self.cycles[key]
+            if not any(self.matches_cycle_search(b) and matches_filter(self.status_of(b), self.filter) for b in books):
+                continue
+            item = QListWidgetItem(name)
+            item.setToolTip(name)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setSizeHint(QSize(100, 38))
+            self.lst_authors.addItem(item)
+            if key == self.cycle_key:
+                current = item
+        current = current or self.lst_authors.item(0)
+        self.lst_authors.setCurrentItem(current)
+        self.lst_authors.blockSignals(False)
+        self.lbl_no_authors.setVisible(current is None)
+        self.show_cycle(current.data(Qt.ItemDataRole.UserRole) if current else None)
+
+    def show_cycle(self, key):
+        self.cycle_key = key
+        name, books = self.cycles.get(key, ("Циклы", []))
+        self.lbl_author.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_author.setText(name)
+        self.lbl_author_desc.setText(f"книг: {len(books)}")
+        self.lbl_bio.clear()
+        from_fb2 = key and any(self.cycle_info(b)[2] == "Из FB2" for b in books)
+        self.lbl_source.setText("Серия в FB2 может быть издательской." if from_fb2 else "")
+        self.av_author.setPixmap(avatar("Ц", 56, bg="#DDE7F2", fg="#2D4A6B"))
+        self.update_filter_counts()
+        self.rebuild_books()
+
+    def edit_cycle(self):
+        from .reading_dialogs import plain, setup_dialog
+
+        book = self.current_book
+        if book is None:
+            return
+        if self.cycle_overrides is None:
+            QMessageBox.warning(self, core.APP_NAME, f"Не удалось открыть исправления циклов.\n{self.cycle_error}")
+            return
+        name, number, source = self.cycle_info(book)
+        dialog = QDialog(self)
+        setup_dialog(dialog, "Цикл и номер книги")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(plain(book.display_title))
+        metadata = f"{book.series} · {cycle_number_label(book.cycle_number)}" if book.series else "Серия не указана"
+        layout.addWidget(plain(f"Из FB2: {metadata}. Серия может быть издательской."))
+        if source == "Викиданные":
+            layout.addWidget(plain(f"Викиданные: {name} · {cycle_number_label(number)}"))
+        form = QFormLayout()
+        title = QLineEdit(name)
+        title.setPlaceholderText("Оставьте пустым для книги без цикла")
+        position = QSpinBox()
+        position.setRange(0, max(999999, number))
+        position.setSpecialValueText("Номер неизвестен")
+        position.setValue(number)
+        position.setEnabled(bool(name))
+        title.textChanged.connect(lambda text: position.setEnabled(bool(text.strip())))
+        form.addRow("Название цикла", title)
+        form.addRow("Номер книги", position)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox()
+        save = buttons.addButton("Сохранить", QDialogButtonBox.ButtonRole.AcceptRole)
+        save.setProperty("primary", True)
+        buttons.addButton("Отмена", QDialogButtonBox.ButtonRole.RejectRole)
+        reset = buttons.addButton("Сбросить исправление", QDialogButtonBox.ButtonRole.ResetRole)
+        reset.setEnabled(source == "Вручную")
+        reset.clicked.connect(lambda: dialog.done(2))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        result = dialog.exec()
+        updated_name, updated_number = title.text().strip(), position.value()
+        dialog.deleteLater()
+        if result == QDialog.DialogCode.Rejected:
+            return
+        try:
+            self.cycle_overrides.save(book, None if result == 2 else updated_name, updated_number)
+        except OSError as err:
+            QMessageBox.warning(self, core.APP_NAME, f"Не удалось сохранить исправление.\n{err}")
+            return
+        self.rebuild_cycles()
+        if self.by_cycle:
+            self.cycle_key = cycle_key(self.cycle_info(book)[0])
+        self.rebuild_authors()
+
     # --------------------------------------------------------------- Книги --
 
     def set_filter(self, key: str):
@@ -752,52 +1028,93 @@ class LibraryTab(QWidget):
 
     def rebuild_books(self):
         g = self.by_key.get(self.current_key) if self.current_key else None
+        grouped = bool(g and not self.by_cycle and self.btn_author_cycles.isChecked())
+        self.btn_author_cycles.setVisible(bool(g) and not self.by_cycle)
+        self.cycle_tools.setVisible(grouped)
+        self.btn_cycle_search.setEnabled(bool(g) and g.key not in self.cycle_searches)
+        self.update_filter_counts()
         self.lst_books.blockSignals(True)
         self.lst_books.clear()
         self.book_rows.clear()
-        books = [b for b in (g.books if g else []) if matches_filter(self.status_of(b), self.filter)]
+        if self.by_cycle:
+            source = self.cycles.get(self.cycle_key, ("", []))[1]
+        else:
+            source = g.books if g else []
+        books = [b for b in source if matches_filter(self.status_of(b), self.filter)]
         q = self.ed_search.text().strip().lower().replace("ё", "е")
-        if q and g and q not in g.sort_name.lower().replace("ё", "е") and q not in g.name.lower().replace("ё", "е"):
+        if self.by_cycle:
+            books = [b for b in books if self.matches_cycle_search(b)]
+        elif q and g and q not in g.sort_name.lower().replace("ё", "е") and q not in g.name.lower().replace("ё", "е"):
             books = [b for b in books if q in b.display_title.lower().replace("ё", "е")]
-        current_item = None
-        for b in books:
-            row = BookRow(self, b, g)
-            it = QListWidgetItem()
-            it.setData(Qt.ItemDataRole.UserRole, str(b.path))
-            it.setSizeHint(QSize(100, 82 if not row.reading_chip.isHidden() else 66))
-            self.lst_books.addItem(it)
-            self.lst_books.setItemWidget(it, row)
-            self.book_rows[str(b.path)] = row
-            self._set_small_cover(row)
-            if self.current_book and str(self.current_book.path) == str(b.path):
-                current_item = it
-        if current_item is None and books:
-            current_item = self.lst_books.item(0)
+        sections = [("", books)]
+        if grouped:
+            cycles = self.group_cycles(books)
+            sections = [cycles[key] for key in sorted(cycles, key=lambda key: (not key, key))]
+        current_item = first_item = None
+        for name, members in sections:
+            if name:
+                heading = QListWidgetItem(name)
+                heading.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                heading.setSizeHint(QSize(100, 36))
+                heading.setToolTip(name)
+                font = self.lst_books.font()
+                font.setBold(True)
+                heading.setFont(font)
+                self.lst_books.addItem(heading)
+            for book in members:
+                path = str(book.path)
+                row = BookRow(self, book, self.group_of[path])
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                item.setSizeHint(QSize(100, 82 if not row.reading_chip.isHidden() else 66))
+                self.lst_books.addItem(item)
+                self.lst_books.setItemWidget(item, row)
+                self.book_rows[path] = row
+                self._set_small_cover(row)
+                if first_item is None:
+                    first_item = item
+                if self.current_book and self.current_book.path == book.path:
+                    current_item = item
+        current_item = current_item or first_item
         if current_item is not None:
             self.lst_books.setCurrentItem(current_item)
         self.lst_books.blockSignals(False)
-        self.lbl_no_books.setVisible(bool(g) and not books)
+        self.lbl_no_books.setText("Нет книг с таким статусом." if self.by_cycle else "У этого автора нет книг с таким статусом.")
+        self.lbl_no_books.setVisible(bool(source) and not books)
         self._refresh_missing_button()
         if current_item is not None:
             self.show_book(self.group_of[current_item.data(Qt.ItemDataRole.UserRole)], current_item.data(Qt.ItemDataRole.UserRole))
-        elif g and g.books:
-            self.show_book(g, str(g.books[0].path))
+        elif source:
+            path = str(source[0].path)
+            self.show_book(self.group_of[path], path)
+        elif self.by_cycle:
+            self.current_book = None
+        self.details.setVisible(self.current_book is not None or not self.by_cycle)
 
     def _refresh_missing_button(self):
-        g = self.by_key.get(self.current_key) if self.current_key else None
-        n = len(self._missing_books(g)) if g else 0
+        n = len(self.missing_items())
         self.btn_missing.setVisible(n > 0)
         self.btn_missing.setText(f"Сконвертировать недостающие: {n}")
 
+    def missing_items(self):
+        if self.by_cycle:
+            books = self.cycles.get(self.cycle_key, ("", []))[1]
+            return [(b, self.group_of[str(b.path)]) for b in books
+                    if self.status_of(b) in MISSING and matches_filter(self.status_of(b), self.filter)
+                    and self.matches_cycle_search(b)]
+        g = self.by_key.get(self.current_key)
+        return [(b, g) for b in self._missing_books(g)] if g else []
+
     def convert_author_missing(self):
-        g = self.by_key.get(self.current_key) if self.current_key else None
-        if g:
-            self.enqueue([(b, g) for b in self._missing_books(g)])
+        items = self.missing_items()
+        if items:
+            self.enqueue(items)
 
     def _on_book_item(self, cur, _prev):
         if cur is not None:
             path = cur.data(Qt.ItemDataRole.UserRole)
-            self.show_book(self.group_of[path], path)
+            if path in self.group_of:
+                self.show_book(self.group_of[path], path)
 
     def show_book(self, g: library.AuthorGroup, path: str):
         b = next((x for x in g.books if str(x.path) == path), None)
@@ -805,9 +1122,12 @@ class LibraryTab(QWidget):
             return
         self.current_book = b
         self.det_title.setText(b.display_title)
+        self.btn_cycle.setEnabled(not b.error)
         self.det_author.setText(g.name)
         f = self.det_fields
         f["series"].setText(b.series_text or "—")
+        name, number, origin = self.cycle_info(b)
+        f["cycle"].setText(f"{name} · {cycle_number_label(number)} ({origin})" if name else "Без цикла")
         f["year"].setText(b.year or "—")
         f["genre"].setText(b.genre_text or (", ".join(b.genres) if b.genres else "—"))
         try:
@@ -858,6 +1178,8 @@ class LibraryTab(QWidget):
                 self.main.notify("Выберите папку с FB2, чтобы искать в библиотеке.", 12000)
 
     def apply_reading_search(self):
+        self.group_mode.setCurrentIndex(0)
+        self.reset_author_cycle()
         title, author = self._reading_search
         self._reading_search = None
         self.filter_buttons["all"].setChecked(True)
@@ -1004,7 +1326,7 @@ class LibraryTab(QWidget):
         self.pool.submit(work)
 
     def _apply_author_wiki(self, key: str, info: dict):
-        if key != self.current_key:
+        if self.by_cycle or key != self.current_key:
             return
         g = self.by_key.get(key)
         if info.get("offline"):
@@ -1173,6 +1495,7 @@ class LibraryTab(QWidget):
         self.small.clear()
         self.big.clear()
         self.groups = []
+        self.cycles.clear()
         self.checked.clear()
         self.scanned_once = False
         if self.s.library_root:
@@ -1182,7 +1505,9 @@ class LibraryTab(QWidget):
     def _toggle_wiki(self, on: bool):
         self.s.wiki_enabled = on
         self.s.save()
-        if self.current_key:
+        if self.by_cycle:
+            self.show_cycle(self.cycle_key)
+        elif self.current_key:
             self.show_author(self.current_key)
 
     def settings_changed(self):

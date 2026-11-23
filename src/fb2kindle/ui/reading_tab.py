@@ -176,10 +176,34 @@ class ReadingTab(QWidget):
         self.edit_entry(entry, read=read)
 
     def edit_entry(self, entry=None, read=False):
-        dialog = EntryDialog(entry, self, read=read)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self.save_entry(dialog.entry)
+        library_tab = self.main.library_tab
+        dialog = EntryDialog(entry, self, read=read,
+                             suggestions=self.library_suggestions if entry is None else None)
+        if entry is None:
+            library_tab.books_loaded.connect(dialog.update_suggestions)
+            library_tab.ensure_loaded()
+        try:
+            result = dialog.exec()
+        finally:
+            if entry is None:
+                library_tab.books_loaded.disconnect(dialog.update_suggestions)
+        if result == QDialog.DialogCode.Accepted:
+            self.save_entry(dialog.entry)
+        dialog.deleteLater()
+
+    def library_suggestions(self, text):
+        query = library.norm_title(text)
+        if not query:
+            return []
+        matches = []
+        for group in self.main.library_tab.groups:
+            for book in group.books:
+                title = library.norm_title(book.display_title)
+                if not book.error and query in title:
+                    matches.append((not title.startswith(query), title, book.first_author or group.name, book, group.name))
+        matches.sort(key=lambda match: match[:3])
+        return [(reading.Entry.from_book(book, author), self.entry_for_book(book, author))
+                for _, _, _, book, author in matches[:20]]
 
     def save_entry(self, entry):
         try:

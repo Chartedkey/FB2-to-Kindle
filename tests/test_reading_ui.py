@@ -254,3 +254,173 @@ def test_not_interested_replaces_recommendation_and_can_restore_after_restart(wi
     assert reopened.pref('dismissed_recommendations') == []
     assert original['key'] in [c['key'] for c in tracker.candidates]
     assert tracker.store.all() == before_entries
+
+
+def test_library_mark_read_and_add_book_suggestions(window):
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    app, win = window
+    lib, tracker = win.library_tab, win.reading_tab
+    group = next(g for g in lib.groups if g.name == "Айзек Азимов")
+    book = next(b for b in group.books if b.title == "Я, робот")
+    original = book.path.read_bytes()
+    lib.show_author(group.key)
+
+    def mark():
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, EntryDialog)
+        assert dialog.precision.currentData() == "unknown"
+        dialog.rating.setCurrentIndex(4)
+        dialog.save_button.click()
+
+    for _ in range(2):
+        QTimer.singleShot(0, mark)
+        lib.book_rows[str(book.path)].read_action.click()
+    entry, = tracker.store.all()
+    assert (entry.status, entry.rating, entry.finished, entry.paths) == ("read", 4, "", [str(book.path)])
+    assert reading.completed(tracker.entries) == [entry]
+    assert book.path.read_bytes() == original
+    assert lib.status_of(book) == "none"
+
+    win.tabs.setCurrentIndex(2)
+    add = next(button for button in tracker.findChildren(QPushButton) if button.text() == "Добавить книгу…")
+
+    def select_suggestion():
+        dialog = QApplication.activeModalWidget()
+        dialog.title.setText("робот")
+        item = dialog.suggestions.item(0)
+        assert item.text() == "Я, робот  ·  Айзек Азимов"
+        dialog.suggestions.itemActivated.emit(item)
+        assert dialog.author.text() == "Айзек Азимов"
+        assert dialog.rating.currentData() == 4
+        dialog.save_button.click()
+
+    QTimer.singleShot(0, select_suggestion)
+    add.click()
+    assert tracker.store.all() == [entry]
+
+    def add_manually():
+        dialog = QApplication.activeModalWidget()
+        dialog.title.setText("Вне библиотеки")
+        dialog.author.setText("Другой автор")
+        assert not dialog.suggestions.isVisible()
+        dialog.save_button.click()
+
+    QTimer.singleShot(0, add_manually)
+    add.click()
+    manual = tracker.store.get(reading.identity("Вне библиотеки", "Другой автор"))
+    assert manual and not manual.paths
+
+
+def test_cycle_order_overrides_and_conversion(window):
+    from fixtures import fb2
+    from fb2kindle import library
+    from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QSpinBox
+
+    app, win = window
+    lib = win.library_tab
+    folder = Path(lib.s.library_root) / "Мьевилль Чайна"
+    first = folder / "Первая книга.fb2"
+    first.write_bytes(fb2("Первая книга", "Чайна", "Мьевилль", series="Fantasy World", num=1))
+    for filename, number in (("Последняя книга", 10), ("Без номера", "3?")):
+        (folder / f"{filename}.fb2").write_bytes(fb2(filename, "Чайна", "Мьевилль", series="Бас-Лаг", num=number))
+    original = first.read_bytes()
+    lib.rescan()
+    assert wait(app, lambda: not lib.scanning)
+    lib.group_mode.setCurrentIndex(1)
+    lib.show_cycle("fantasy world")
+    assert lib.current_book.path == first
+
+    def edit():
+        dialog = QApplication.activeModalWidget()
+        dialog.findChild(QLineEdit).setText("Бас-Лаг")
+        dialog.findChild(QSpinBox).setValue(1)
+        next(button for button in dialog.findChildren(QPushButton) if button.text() == "Сохранить").click()
+
+    QTimer.singleShot(0, edit)
+    lib.btn_cycle.click()
+    assert lib.lbl_author.text() == "Бас-Лаг"
+    assert library.CycleOverrides().for_book(lib.current_book) == ("Бас-Лаг", 1, True)
+    assert first.read_bytes() == original
+    assert [row.book.title for row in lib.book_rows.values()] == ["Первая книга", "Шрам", "Последняя книга", "Без номера"]
+    assert lib.book_rows[str(folder / "Без номера.fb2")].sub.text().startswith("Номер неизвестен")
+    if core.fbc_path():
+        lib.book_rows[str(first)].action.click()
+        assert wait(app, lambda: lib.status_of(lib.current_book) in ("done", "error"))
+        assert lib.status_of(lib.current_book) == "done", lib.errors
+        expected = Path(lib.s.kindle_root) / "Чайна Мьевилль" / "Первая книга.kfx"
+        assert lib.outputs[str(first)] == expected
+        assert expected.stat().st_size > 0
+    lib.group_mode.setCurrentIndex(0)
+    assert lib.lbl_author.text() == "Айзек Азимов"
+    assert lib.filter_buttons["all"].text() == "Все · 2"
+    author = next(g for g in lib.groups if g.name == "Чайна Мьевилль")
+    other = next(g for g in lib.groups if g.name == "Айзек Азимов")
+    lib.show_author(author.key)
+    assert not lib.btn_author_cycles.isChecked()
+    assert lib.lst_books.count() == len(author.books)
+    assert lib.filter_buttons["all"].text() == f"Все · {len(author.books)}"
+    original_order = list(lib.book_rows)
+
+    lib.btn_author_cycles.click()
+    assert lib.lst_books.item(0).text() == "Бас-Лаг"
+    assert not lib.lst_books.item(0).flags() & Qt.ItemFlag.ItemIsSelectable
+    assert [row.book.title for row in list(lib.book_rows.values())[:4]] == [
+        "Первая книга", "Шрам", "Последняя книга", "Без номера"]
+    assert [row.title.text() for row in list(lib.book_rows.values())[:4]] == [
+        "1) Первая книга", "2) Шрам", "10) Последняя книга", "Без номера"]
+    assert lib.lst_books.item(5).text() == "Без цикла"
+    assert len(lib.book_rows) == len(author.books)
+    assert lib.filter_buttons["all"].text() == f"Все · {len(author.books)}"
+    lib.btn_author_cycles.click()
+    assert lib.lst_books.count() == len(author.books)
+    assert list(lib.book_rows) == original_order
+
+    lib.btn_author_cycles.click()
+    lib.show_author(other.key)
+    assert not lib.btn_author_cycles.isChecked()
+    assert lib.filter_buttons["all"].text() == f"Все · {len(other.books)}"
+
+
+def test_author_cycle_search_matches_books_and_keeps_manual_edits(window, monkeypatch):
+    import json
+    from urllib.parse import parse_qs, urlsplit
+    from fixtures import fb2
+
+    app, win = window
+    lib = win.library_tab
+    author = next(g for g in lib.groups if g.name == "Чайна Мьевилль")
+    first = Path(lib.s.library_root) / "Мьевилль Чайна" / "Первая книга.fb2"
+    original = fb2("Первая книга", "Чайна", "Мьевилль", series="Fantasy World", num=5)
+    first.write_bytes(original)
+    lib.rescan()
+    assert wait(app, lambda: not lib.scanning)
+    lib.show_author(author.key)
+
+    def response(url, **_):
+        query = parse_qs(urlsplit(url).query)["query"][0]
+        assert "Чайна Мьевилль" in query
+        assert "Первая книга" not in query
+        records = [
+            dict(author="Q1", book="Q2", title="Первая книга", cycle="Q3", cycleLabel="Бас-Лаг", position="1"),
+            dict(author="Q1", book="Q4", title="Шрам", cycle="Q3", cycleLabel="Бас-Лаг", position="2"),
+            dict(author="Q1", book="Q5", title="Кракен", cycle="Q7", cycleLabel="Другой цикл"),
+            dict(author="Q1", book="Q6", title="Кракен", cycle="Q8", cycleLabel="Ещё один цикл"),
+        ]
+        return json.dumps({"results": {"bindings": [
+            {key: {"value": value} for key, value in record.items()} for record in records
+        ]}}).encode()
+
+    monkeypatch.setattr(core, "http_get", response)
+    kraken = next(b for b in lib.by_key[author.key].books if b.title == "Кракен")
+    scar = next(b for b in lib.by_key[author.key].books if b.title == "Шрам")
+    lib.cycle_overrides.save(scar, "Бас-Лаг", 7)
+    lib.btn_author_cycles.click()
+    lib.btn_cycle_search.click()
+    assert wait(app, lambda: not lib.cycle_searches)
+    assert lib.lst_books.item(0).text() == "Бас-Лаг"
+    assert [row.book.title for row in list(lib.book_rows.values())[:2]] == ["Первая книга", "Шрам"]
+    assert lib.cycle_info(lib.book_rows[str(first)].book) == ("Бас-Лаг", 1, "Викиданные")
+    assert lib.cycle_info(scar) == ("Бас-Лаг", 7, "Вручную")
+    assert lib.cycle_info(kraken) == ("", 0, "Из FB2")
+    assert first.read_bytes() == original

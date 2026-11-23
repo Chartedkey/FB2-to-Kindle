@@ -26,7 +26,7 @@ NONE, DONE, CHANGED = "none", "done", "changed"
 class MetaCache:
     """Метаданные книг на диске: при повторном открытии библиотека не перечитывает файлы."""
 
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self, path: Path | None = None):
         self.path = path or (data_dir() / "library-cache.json")
@@ -124,6 +124,40 @@ def norm_words(s: str) -> str:
 def norm_title(s: str) -> str:
     s = s.lower().replace("ё", "е")
     return "".join(re.findall(r"\w+", s))
+
+
+class CycleOverrides:
+    """Ручные исправления привязаны к файлам библиотеки и хранятся вне кэша."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or data_dir() / "library-cycles.json"
+        self.values = {}
+        if self.path.exists():
+            values = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(values, dict) or any(
+                not isinstance(value, list) or len(value) != 2
+                or not isinstance(value[0], str) or type(value[1]) is not int or value[1] < 0
+                for value in values.values()
+            ):
+                raise ValueError("Некорректный формат исправлений циклов.")
+            self.values = values
+
+    def for_book(self, book: Book) -> tuple[str, int, bool]:
+        key = str(book.path)
+        if key in self.values:
+            name, number = self.values[key]
+            return name, number, True
+        return book.series, book.cycle_number, False
+
+    def save(self, book: Book, name: str | None, number: int = 0):
+        values = self.values.copy()
+        key = str(book.path)
+        if name is None:
+            values.pop(key, None)
+        else:
+            values[key] = [name, number if name else 0]
+        write_json_atomic(self.path, values)
+        self.values = values
 
 
 def _top_folder(book: Book, root: Path) -> str:

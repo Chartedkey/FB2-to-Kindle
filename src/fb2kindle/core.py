@@ -196,6 +196,7 @@ class Book:
     size: int = 0
     mtime: float = 0.0
     error: str = ""
+    cycle_number: int = 0
 
     @property
     def author_display(self) -> str:
@@ -366,8 +367,11 @@ def read_metadata(path: Path) -> Book:
         seq = ti.find("sequence")
         if seq is not None:
             book.series = (seq.get("name") or "").strip()
-            num = re.match(r"\d+", (seq.get("number") or "").strip())
+            number = (seq.get("number") or "").strip()
+            num = re.match(r"\d+", number)
             book.series_num = int(num.group(0)) if num else 0
+            if re.fullmatch(r"\d+", number):
+                book.cycle_number = book.series_num
     except zipfile.BadZipFile:
         book.error = "повреждённый архив"
     except ET.ParseError:
