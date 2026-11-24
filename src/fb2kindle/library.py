@@ -226,7 +226,7 @@ class KindleIndex:
                     self.by_title.setdefault(norm_title(title), []).append(Path(dirpath) / n)
 
     def find(self, book: Book, author_key: str) -> Path | None:
-        cands = self.by_title.get(norm_title(safe_name(book.display_title)), [])
+        cands = self.by_title.get(norm_title(safe_name(book.output_title)), [])
         if not cands:
             return None
         for c in cands:
@@ -258,7 +258,7 @@ def target_path(book: Book, group: AuthorGroup, s: Settings, existing: Path | No
     """Куда сохранить книгу из библиотеки: папка Kindle / Имя Фамилия / Название.kfx."""
     if existing is not None:
         return existing.with_suffix("." + s.output_format)
-    return Path(s.kindle_root) / safe_name(group.name, "Без автора") / (safe_name(book.display_title) + "." + s.output_format)
+    return Path(s.kindle_root) / safe_name(group.name, "Без автора") / (safe_name(book.output_title) + "." + s.output_format)
 
 
 # --------------------------------------------------------------------------- #

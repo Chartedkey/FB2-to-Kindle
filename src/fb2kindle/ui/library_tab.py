@@ -6,8 +6,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
                                QSpinBox, QStackedWidget, QToolButton, QMenu, QVBoxLayout, QWidget)
@@ -117,6 +117,8 @@ class BookRow(QWidget):
             elif number and not tab.by_cycle:
                 self.title.setText(f"{number}) {book.display_title}")
                 sub = " · ".join(x for x in (book.year, book.genre_text, source) if x)
+        if book.import_variant:
+            sub = f"Вариант {book.import_variant} · {sub}".rstrip(" ·")
         self.sub = ElidedLabel(sub or Path(book.path).name)
         self.sub.setToolTip(sub)
         self.sub.setProperty("muted", True)
@@ -219,6 +221,7 @@ class LibraryTab(QWidget):
         self.wiki_cache = wiki.WikiCache()
         self.scanning = False
         self.scanned_once = False
+        self.scanned_root = None
         # очередь конвертации
         self.pending: list[core.Job] = []
         self.queue_lock = threading.Lock()
@@ -536,6 +539,7 @@ class LibraryTab(QWidget):
         self.det_action = button("Конвертировать", primary=True,
                                  slot=lambda: self.current_book and self.book_action(self.current_book, self.group_of[str(self.current_book.path)]))
         btns.addWidget(self.det_action)
+        btns.addWidget(button("Открыть FB2", slot=self.open_current_fb2))
         btns.addWidget(button("Показать FB2 в папке", slot=lambda: self.current_book and show_in_explorer(self.current_book.path)))
         self.reading_detail = QLabel("")
         self.reading_detail.setTextFormat(Qt.TextFormat.PlainText)
@@ -585,6 +589,7 @@ class LibraryTab(QWidget):
             QMessageBox.information(self, core.APP_NAME, "Дождитесь окончания конвертации.")
             return
         self.scanning = True
+        self.scanned_root = None
         self.btn_rescan.setEnabled(False)
         if not self.groups:
             self.stack.setCurrentIndex(1)
@@ -606,7 +611,7 @@ class LibraryTab(QWidget):
                         status[str(b.path)] = st
                         if out:
                             outputs[str(b.path)] = out
-                ui_call(lambda: self._on_scanned(groups, status, outputs))
+                ui_call(lambda: self._on_scanned(groups, status, outputs, str(root)))
             except Exception as e:  # noqa: BLE001
                 err = str(e)
                 ui_call(lambda: self._on_scan_error(err))
@@ -624,7 +629,8 @@ class LibraryTab(QWidget):
         self.lbl_summary.setText("")
         QMessageBox.warning(self, core.APP_NAME, f"Не удалось прочитать библиотеку:\n{err}")
 
-    def _on_scanned(self, groups, status, outputs):
+    def _on_scanned(self, groups, status, outputs, root=None):
+        self.scanned_root = root or self.s.library_root
         self.scanning = False
         self.scanned_once = True
         self.btn_rescan.setEnabled(True)
@@ -1115,6 +1121,10 @@ class LibraryTab(QWidget):
             path = cur.data(Qt.ItemDataRole.UserRole)
             if path in self.group_of:
                 self.show_book(self.group_of[path], path)
+
+    def open_current_fb2(self):
+        if self.current_book and not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.current_book.path.resolve()))):
+            self.main.notify("Не удалось открыть файл. Проверьте, назначена ли читалка для FB2.")
 
     def show_book(self, g: library.AuthorGroup, path: str):
         b = next((x for x in g.books if str(x.path) == path), None)

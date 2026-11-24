@@ -15,6 +15,7 @@ from .common import button, init_bridge, stylesheet, ui_call
 from .convert_tab import ConvertTab
 from .update_dialog import UpdateDialog
 from .library_tab import LibraryTab
+from .archive_tab import ArchiveTab
 
 
 class MainWindow(QMainWindow):
@@ -71,7 +72,9 @@ class MainWindow(QMainWindow):
             label.setWordWrap(True)
             self.tabs.addTab(label, "Моё чтение")
 
-        self.tabs.setCurrentIndex(self.s.last_tab if self.s.last_tab in (0, 1, 2) else 0)
+        self.archive_tab = ArchiveTab(self)
+        self.tabs.addTab(self.archive_tab, "Полная библиотека")
+        self.tabs.setCurrentIndex(self.s.last_tab if self.s.last_tab in (0, 1, 2, 3) else 0)
         self._on_tab(self.tabs.currentIndex())
         QTimer.singleShot(4000, self.reading_report_notice)
 
@@ -85,6 +88,12 @@ class MainWindow(QMainWindow):
             self.library_tab.ensure_loaded()
             if self.reading_tab:
                 self.reading_tab.refresh()
+        elif idx == 3:
+            self.library_tab.ensure_loaded()
+            if self.archive_tab.loaded:
+                self.archive_tab.library_refreshed()
+            else:
+                self.archive_tab.ensure_loaded()
 
     def notify(self, text: str, ms: int = 8000):
         self.lbl_msg.setText(text)
@@ -178,12 +187,18 @@ class MainWindow(QMainWindow):
     def quit_for_update(self):
         """Закрыться, чтобы сценарий обновления мог заменить файлы."""
         self._updating = True
-        self.close()
-        QApplication.instance().quit()
+        if self.close():
+            QApplication.instance().quit()
+        else:
+            self._updating = False
 
     # ----------------------------------------------------------------------- #
 
     def closeEvent(self, e):
+        if self.archive_tab.busy:
+            self.notify("Дождитесь окончания операции с полным каталогом.")
+            e.ignore()
+            return
         if not getattr(self, "_updating", False) and (self.convert_tab.busy or self.library_tab.busy):
             if QMessageBox.question(self, core.APP_NAME, "Конвертация ещё идёт. Остановить и выйти?") \
                     != QMessageBox.StandardButton.Yes:
@@ -191,6 +206,7 @@ class MainWindow(QMainWindow):
                 return
             if self.convert_tab.converter:
                 self.convert_tab.converter.cancel()
+        self.archive_tab.closed = True
         self.library_tab.shutdown()
         if self.reading_tab:
             self.reading_tab.shutdown()

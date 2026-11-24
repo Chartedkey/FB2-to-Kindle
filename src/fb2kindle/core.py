@@ -92,6 +92,8 @@ class Settings:
     # Окно
     window_geometry: str = ""
     last_tab: int = 0
+    archive_index: str = ""
+    archive_root: str = ""
 
     @staticmethod
     def path() -> Path:
@@ -222,6 +224,17 @@ class Book:
     @property
     def display_title(self) -> str:
         return self.title or stem_of(self.path)
+
+    @property
+    def import_variant(self) -> str:
+        match = re.search(r" \[INPX-([0-9a-f]{12})\]$", stem_of(self.path))
+        return match[1] if match else ""
+
+    @property
+    def output_title(self) -> str:
+        if self.import_variant:
+            return f"{safe_name(self.display_title, max_len=112)} [INPX-{self.import_variant}]"
+        return self.display_title
 
     @property
     def genre_text(self) -> str:
@@ -491,7 +504,7 @@ def plan_outputs(books: list[Book], s: Settings) -> list[Path]:
             folder = root / safe_name(b.first_author, "Без автора")
         else:
             folder = root
-        base = safe_name(b.display_title)
+        base = safe_name(b.output_title)
         cand = folder / (base + ext)
         n = 2
         while os.path.normcase(str(cand)) in used:

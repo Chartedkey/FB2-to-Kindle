@@ -61,6 +61,9 @@ class UpdateDialog(QDialog):
             self.status.setProperty("muted", True)
 
     def install(self):
+        if getattr(self.main, "archive_tab", None) and self.main.archive_tab.busy:
+            self.status.setText("Дождитесь окончания операции с полным каталогом.")
+            return
         if self.main.convert_tab.busy or self.main.library_tab.busy:
             self.status.setText("Сначала дождитесь окончания конвертации.")
             return

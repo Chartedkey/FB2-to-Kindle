@@ -115,7 +115,7 @@ def test_broken_history_does_not_block_converter(tmp_path, monkeypatch):
     app = create_app([])
     win = MainWindow(core.Settings(wiki_enabled=False))
     assert win.reading_tab is None
-    assert win.tabs.count() == 3
+    assert win.tabs.count() == 4
     assert path.read_bytes() == original
     assert win.convert_tab is not None
     win.close()
@@ -424,3 +424,47 @@ def test_author_cycle_search_matches_books_and_keeps_manual_edits(window, monkey
     assert lib.cycle_info(scar) == ("Бас-Лаг", 7, "Вручную")
     assert lib.cycle_info(kraken) == ("", 0, "Из FB2")
     assert first.read_bytes() == original
+
+
+def test_full_library_imports_two_selected_editions(window, tmp_path):
+    from test_archive_catalog import archive_fixture
+
+    app, win = window
+    source, _, values = archive_fixture(tmp_path)
+    win.s.archive_index = str(source)
+    win.s.archive_root = str(tmp_path)
+    win.tabs.setCurrentIndex(3)
+    tab = win.archive_tab
+    assert win.tabs.tabText(3) == "Полная библиотека"
+    assert wait(app, lambda: tab.loaded and not tab.busy and tab.authors.count() == 2)
+    tab.search.setText("Два перевода")
+    assert wait(app, lambda: not tab.busy and tab.authors.count() == 1)
+    work = tab.books.topLevelItem(0)
+    assert work.text(0) == "Два перевода"
+    assert work.childCount() == 2
+    work.setExpanded(True)
+    tab.inspect_button.click()
+    assert wait(app, lambda: not tab.busy and len(tab.details) == 2)
+    work = tab.books.topLevelItem(0)
+    assert "Иванов" in work.child(0).text(2)
+    assert "Петров" in work.child(1).text(2)
+    tab.select_all.click()
+    assert not tab.checked
+    for index in range(2):
+        work = tab.books.topLevelItem(0)
+        work.child(index).setCheckState(0, Qt.CheckState.Checked)
+    assert len(tab.checked) == 2
+    tab.add.click()
+
+    def imported():
+        group = next((g for g in win.library_tab.groups if g.name == "Стивен Кинг"), None)
+        return group and len(group.books) == 2 and len(tab.present) == 2 and not tab.busy
+
+    assert wait(app, imported)
+    folder = Path(win.s.library_root) / "Кинг Стивен"
+    assert sorted(p.read_bytes() for p in folder.glob("*.fb2")) == sorted(values.values())
+    tab.filter.setCurrentIndex(2)
+    assert tab.books.topLevelItemCount() == 0
+    tab.filter.setCurrentIndex(1)
+    tab.books.setCurrentItem(tab.books.topLevelItem(0).child(0))
+    assert tab.open_button.isEnabled()
