@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
                 return
             if self.convert_tab.converter:
                 self.convert_tab.converter.cancel()
-        self.archive_tab.closed = True
+        self.archive_tab.shutdown()
         self.library_tab.shutdown()
         if self.reading_tab:
             self.reading_tab.shutdown()

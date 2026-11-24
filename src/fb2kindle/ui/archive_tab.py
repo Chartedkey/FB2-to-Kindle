@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zipfile import ZipFile
 
-from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QLocale, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -38,6 +39,11 @@ class ArchiveTab(QWidget):
         self.missing_archives = set()
         self.checked = set()
         self.details = {}
+        self.cover_pool = ThreadPoolExecutor(max_workers=1)
+        self.cover_future = None
+        self.cover_key = None
+        self.cover_timer = QTimer(self, interval=150, singleShot=True)
+        self.cover_timer.timeout.connect(self.load_cover)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 10)
         paths = QHBoxLayout()
@@ -86,16 +92,40 @@ class ArchiveTab(QWidget):
         self.filter = QComboBox()
         self.filter.addItems(["Все", "Уже есть", "Нет у меня"])
         self.filter.currentIndexChanged.connect(self.populate)
-        body.addWidget(self.filter)
+        filters = QHBoxLayout()
+        filters.addWidget(self.filter, 1)
+        self.language = QComboBox()
+        self.language.setAccessibleName("Язык книг")
+        self.language.addItem("Все языки")
+        self.language.currentIndexChanged.connect(self.populate)
+        filters.addWidget(self.language, 1)
+        body.addLayout(filters)
         self.books = QTreeWidget()
         self.books.setColumnCount(3)
         self.books.setHeaderLabels(["Произведение / вариант", "В моей библиотеке", "Сведения"])
         self.books.setColumnWidth(0, 255)
         self.books.setColumnWidth(1, 150)
         self.books.itemChanged.connect(self.toggle_item)
-        self.books.currentItemChanged.connect(self.update_actions)
+        self.books.currentItemChanged.connect(self.selection_changed)
         self.books.itemDoubleClicked.connect(lambda *_: self.inspect())
-        body.addWidget(self.books, 1)
+        content = QHBoxLayout()
+        content.addWidget(self.books, 1)
+        self.cover_panel = QWidget()
+        preview = QVBoxLayout(self.cover_panel)
+        preview.setContentsMargins(4, 0, 0, 0)
+        self.cover = QLabel("Выберите книгу")
+        self.cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover.setFixedSize(140, 205)
+        self.cover.setStyleSheet("background:#F3F3F3; border-radius:6px;")
+        preview.addWidget(self.cover)
+        self.cover_caption = QLabel()
+        self.cover_caption.setTextFormat(Qt.TextFormat.PlainText)
+        self.cover_caption.setWordWrap(True)
+        self.cover_caption.setMaximumWidth(140)
+        preview.addWidget(self.cover_caption)
+        preview.addStretch(1)
+        content.addWidget(self.cover_panel)
+        body.addLayout(content, 1)
         actions = QHBoxLayout()
         self.add = button("Добавить выбранные", primary=True, slot=self.import_selected)
         self.select_all = button("Выбрать недостающие", slot=self.select_missing)
@@ -193,12 +223,30 @@ class ArchiveTab(QWidget):
         self.authors.clear()
         self.clear_books()
 
-        def done(_):
+        def work():
+            index.build(source, refresh=refresh)
+            return index.languages()
+
+        def done(languages):
+            selected = self.language.currentData()
+            self.language.blockSignals(True)
+            self.language.clear()
+            self.language.addItem("Все языки")
+            labels = []
+            for code in languages:
+                locale = QLocale(code)
+                name = (locale.nativeLanguageName().capitalize() if locale.language() != QLocale.Language.C
+                        else code)
+                labels.append((f"{name} ({code})" if code else "Язык не указан", code))
+            for name, code in sorted(labels, key=lambda entry: (not entry[1], entry[0])):
+                self.language.addItem(name, code)
+            self.language.setCurrentIndex(max(0, self.language.findData(selected)))
+            self.language.blockSignals(False)
             self.loaded = True
             self.main.s.save()
             self.load_authors(0)
 
-        self.run("Читаю индекс коллекции…", lambda: index.build(source, refresh=refresh), done)
+        self.run("Читаю индекс коллекции…", work, done)
 
     def search_changed(self):
         if self.loaded:
@@ -264,10 +312,12 @@ class ArchiveTab(QWidget):
             candidates, folders, imported = catalog.local_candidates(local, author, root)
             related = {b.key for b in books if library.norm_title(b.title) in candidates}
             unavailable = {b.key for b in books if Path(b.archive).name.casefold() not in archives}
-            return books, archives, folders, related, unavailable, catalog.match_variants(books, candidates, imported, archives)
+            matches = catalog.match_variants(books, candidates, imported, archives)
+            return books, archives, folders, related, unavailable, matches, index.author_folder(author)
 
         def done(result):
-            books, self.archives, self.folders, self.related, self.missing_archives, self.present = result
+            (books, self.archives, self.folders, self.related, self.missing_archives,
+             self.present, self.author_folder) = result
             self.variants = {book.key: book for book in books}
             self.populate()
             if not self.archives:
@@ -295,22 +345,13 @@ class ArchiveTab(QWidget):
         selected = self.current_key()
         expanded = {self.books.topLevelItem(i).text(0) for i in range(self.books.topLevelItemCount())
                     if self.books.topLevelItem(i).isExpanded()}
-        groups = defaultdict(list)
-        for book in self.variants.values():
-            groups[library.norm_title(book.title)].append(book)
+        groups = self.filtered_works()
         self.books.blockSignals(True)
         self.books.clear()
         total_present = sum(any(b.key in self.present for b in books) for books in groups.values())
         self.heading.setText(f"{self.author_name} · в моей библиотеке {total_present} из {len(groups)}")
         mode = self.filter.currentIndex()
-        query = self.search_query.strip().casefold().replace("ё", "е")
-        title_query = library.norm_title(query) if (
-            query and query not in self.author_name.casefold().replace("ё", "е")
-            and library.norm_words(query) not in self.author_key
-        ) else ""
-        for key, books in groups.items():
-            if title_query and title_query not in key:
-                continue
+        for books in groups.values():
             visible = [b for b in books if mode == 0 or (b.key in self.present) == (mode == 1)]
             if not visible:
                 continue
@@ -342,7 +383,74 @@ class ArchiveTab(QWidget):
         self.books.blockSignals(False)
         if not self.books.currentItem() and self.books.topLevelItemCount():
             self.books.setCurrentItem(self.books.topLevelItem(0))
+        self.selection_changed()
+
+    def filtered_works(self):
+        groups = defaultdict(list)
+        query = self.search_query
+        title_query = "" if catalog.author_matches(self.author_key, query) else library.norm_title(query)
+        language = self.language.currentData()
+        for book in self.variants.values():
+            key = library.norm_title(book.title)
+            if title_query and title_query not in key:
+                continue
+            if language is None or catalog.language_code(book.language) == language:
+                groups[key].append(book)
+        return groups
+
+    def selection_changed(self, *_):
         self.update_actions()
+        self.update_cover()
+
+    def update_cover(self):
+        item = self.books.currentItem()
+        keys = [self.current_key()] if self.current_key() else (
+            [tuple(key) for key in item.data(0, ROLE + 1) or []] if item else [])
+        key = next((key for key in keys if key in self.variants and key not in self.missing_archives), None)
+        variant = self.variants.get(key)
+        source_key = (self.main.s.archive_root, key) if variant else None
+        if self.cover_key == source_key:
+            return
+        self.cover_key = source_key
+        self.cover_timer.stop()
+        if self.cover_future:
+            self.cover_future.cancel()
+        self.cover.setText("Загружаю обложку…" if variant else
+                           "Архив не найден" if keys else "Выберите книгу")
+        self.cover_caption.setText(f"{variant.title} · вариант {variant.identifier}" if variant else "")
+        if variant:
+            self.cover_timer.start()
+
+    def load_cover(self):
+        source_key = self.cover_key
+        if self.closed or not source_key:
+            return
+        variant = self.variants[source_key[1]]
+        archives = self.archives
+
+        def work():
+            try:
+                data = catalog.read_cover(archives, variant)
+            except Exception:
+                data = None
+            ui_call(lambda: self.show_cover(source_key, data))
+
+        self.cover_future = self.cover_pool.submit(work)
+
+    def show_cover(self, source_key, data):
+        if self.closed or self.cover_key != source_key:
+            return
+        pixmap = QPixmap()
+        if data and pixmap.loadFromData(data):
+            self.cover.setPixmap(pixmap.scaled(QSize(140, 205), Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.cover.setText("Обложки нет")
+
+    def shutdown(self):
+        self.closed = True
+        self.cover_timer.stop()
+        self.cover_pool.shutdown(wait=False, cancel_futures=True)
 
     def current_key(self):
         item = self.books.currentItem()
@@ -358,9 +466,7 @@ class ArchiveTab(QWidget):
         self.update_actions()
 
     def select_missing(self):
-        groups = defaultdict(list)
-        for book in self.variants.values():
-            groups[library.norm_title(book.title)].append(book)
+        groups = self.filtered_works()
         ambiguous = 0
         for books in groups.values():
             if any(b.key in self.present or b.key in self.related for b in books):
@@ -427,8 +533,9 @@ class ArchiveTab(QWidget):
             return
         variants = [book for key, book in self.variants.items() if key in self.checked and key not in self.present]
         folders = sorted(self.folders, key=lambda p: str(p).casefold())
-        destination = folders[0] if len(folders) == 1 else root / core.safe_name(self.author_name)
+        destination = folders[0] if len(folders) == 1 else root / core.safe_name(self.author_folder)
         archives = self.archives
+        occupied = {library.norm_title(self.variants[key].title) for key in self.related | self.present.keys()}
 
         def done(result):
             paths, errors = result
@@ -443,7 +550,7 @@ class ArchiveTab(QWidget):
                 self.rescan_needed = True
                 self.refresh_personal()
 
-        self.run("Добавляю выбранные книги…", lambda: catalog.import_variants(variants, root, destination, archives), done)
+        self.run("Добавляю выбранные книги…", lambda: catalog.import_variants(variants, root, destination, archives, occupied), done)
 
     def refresh_personal(self):
         if self.closed or not self.rescan_needed:
@@ -458,7 +565,7 @@ class ArchiveTab(QWidget):
     def update_actions(self, *_):
         ready = self.loaded and not self.busy
         for widget in (self.inpx_button, self.zip_button, self.refresh_button, self.authors,
-                       self.books, self.filter):
+                       self.books, self.filter, self.language):
             widget.setEnabled(not self.busy)
         self.prev.setEnabled(ready and self.offset > 0)
         self.next.setEnabled(ready and getattr(self, "more_authors", False))

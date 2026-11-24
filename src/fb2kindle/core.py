@@ -183,6 +183,9 @@ class Author:
         return name or self.nick
 
 
+ARCHIVE_VARIANT_SUFFIX = re.compile(r" \(вариант ([0-9]+)\)$")
+
+
 @dataclass
 class Book:
     path: Path
@@ -231,7 +234,15 @@ class Book:
         return match[1] if match else ""
 
     @property
+    def archive_variant_number(self) -> str:
+        match = ARCHIVE_VARIANT_SUFFIX.search(stem_of(self.path))
+        return match[1] if match else ""
+
+    @property
     def output_title(self) -> str:
+        if self.archive_variant_number:
+            title = ARCHIVE_VARIANT_SUFFIX.sub("", self.display_title)
+            return f"{safe_name(title, max_len=130)} (вариант {self.archive_variant_number})"
         if self.import_variant:
             return f"{safe_name(self.display_title, max_len=112)} [INPX-{self.import_variant}]"
         return self.display_title
@@ -407,6 +418,10 @@ def read_cover(path: Path) -> bytes | None:
         raw = read_fb2_bytes(path, limit=None)
     except Exception:
         return None
+    return cover_from_fb2(raw)
+
+
+def cover_from_fb2(raw: bytes) -> bytes | None:
     text = decode_fb2(raw)
     m = re.search(r"<(\w+:)?coverpage>(.*?)</(\w+:)?coverpage>", text, re.S)
     if not m:

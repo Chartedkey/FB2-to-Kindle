@@ -9,23 +9,25 @@ from fb2kindle import archive_catalog as catalog, core, library
 from fixtures import fb2
 
 
-def archive_fixture(root):
+def archive_fixture(root, *, cover=False, second_language="ru"):
     archive = root / "d.fb2-001-003.zip"
     index = root / "flibusta_fb2_local.inpx"
     fields = "TITLE;AUTHOR;FILE;EXT;LANG;LIBID;DEL"
     records = [
         ("Два перевода", "Кинг,Стивен,:", "1", "fb2", "ru", "1", "0"),
-        ("Два перевода", "Кинг,Стивен,:", "2", "fb2", "ru", "2", "0"),
+        ("Два перевода", "Кинг,Стивен,:", "2", "fb2", second_language, "2", "0"),
         ("Другой рассказ", "Другой,Автор,:", "3", "fb2", "ru", "3", "0"),
         ("Удалено", "Кинг,Стивен,:", "4", "fb2", "ru", "4", "1"),
     ]
     variants = {}
     for number, last in ((1, "Иванов"), (2, "Петров")):
-        text = fb2("Два перевода", "Стивен", "Кинг", cover=False, encoding="utf-8").decode()
+        text = fb2("Два перевода", "Стивен", "Кинг", cover=cover, encoding="utf-8").decode()
         text = text.replace("</title-info>", f"<translator><first-name>Иван</first-name>"
                             f"<last-name>{last}</last-name></translator></title-info>"
                             f"<publish-info><publisher>Издательство {number}</publisher>"
                             f"<year>200{number}</year></publish-info>")
+        if number == 2:
+            text = text.replace("<lang>ru</lang>", f"<lang>{second_language}</lang>")
         variants[number] = text.encode()
     with ZipFile(archive, "w") as bundle:
         for number, data in variants.items():
@@ -42,7 +44,8 @@ def test_index_import_and_matching_keep_editions_separate(tmp_path):
     index.build(source)
     index.build(source)
     author, name = index.authors("Два перевода")[0]
-    assert name == "Кинг Стивен"
+    assert name == "Стивен Кинг"
+    assert index.author_folder(author) == "Кинг Стивен"
     books = index.books(author)
     assert [b.member for b in books] == ["1.fb2", "2.fb2"]
     assert index.authors("Стивен Кинг") == [(author, name)]
@@ -62,9 +65,10 @@ def test_index_import_and_matching_keep_editions_separate(tmp_path):
     assert folders == {folder}
     assert catalog.match_variants(books, titles, imported, archives) == {books[0].key: old_file}
 
-    paths, errors = catalog.import_variants(books[1:], root, folder, archives)
+    paths, errors = catalog.import_variants(books[1:], root, folder, archives, titles)
     assert not errors
     new_path = paths[books[1].key]
+    assert new_path.name == "Два перевода (вариант 2).fb2"
     assert new_path.read_bytes() == original[2]
     assert old_file.read_bytes() == original[1]
     paths, errors = catalog.import_variants(books[1:], root, folder, archives)

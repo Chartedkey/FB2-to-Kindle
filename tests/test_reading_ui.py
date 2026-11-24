@@ -462,9 +462,36 @@ def test_full_library_imports_two_selected_editions(window, tmp_path):
 
     assert wait(app, imported)
     folder = Path(win.s.library_root) / "Кинг Стивен"
+    assert {p.name for p in folder.glob("*.fb2")} == {"Два перевода.fb2", "Два перевода (вариант 2).fb2"}
     assert sorted(p.read_bytes() for p in folder.glob("*.fb2")) == sorted(values.values())
     tab.filter.setCurrentIndex(2)
     assert tab.books.topLevelItemCount() == 0
     tab.filter.setCurrentIndex(1)
     tab.books.setCurrentItem(tab.books.topLevelItem(0).child(0))
     assert tab.open_button.isEnabled()
+
+
+def test_full_library_author_prefix_language_and_cover(window, tmp_path):
+    from test_archive_catalog import archive_fixture
+
+    app, win = window
+    source, _, _ = archive_fixture(tmp_path, cover=True, second_language="en")
+    win.s.archive_index = str(source)
+    win.s.archive_root = str(tmp_path)
+    tab = win.archive_tab
+    tab.search.setText("сти кин")
+    win.tabs.setCurrentIndex(3)
+    assert wait(app, lambda: tab.loaded and not tab.busy and tab.authors.count() == 1)
+    assert tab.authors.item(0).text() == "Стивен Кинг"
+    assert tab.books.topLevelItem(0).childCount() == 2
+    assert wait(app, lambda: not tab.cover.pixmap().isNull())
+
+    tab.language.setCurrentIndex(tab.language.findData("en"))
+    assert tab.books.topLevelItemCount() == 1
+    assert tab.books.topLevelItem(0).text(0) == "Два перевода"
+    assert tab.current_key()[1] == "2.fb2"
+    assert wait(app, lambda: not tab.cover.pixmap().isNull())
+
+    tab.language.setCurrentIndex(tab.language.findData("ru"))
+    assert tab.current_key()[1] == "1.fb2"
+    assert wait(app, lambda: not tab.cover.pixmap().isNull())

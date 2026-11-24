@@ -117,8 +117,9 @@ class BookRow(QWidget):
             elif number and not tab.by_cycle:
                 self.title.setText(f"{number}) {book.display_title}")
                 sub = " · ".join(x for x in (book.year, book.genre_text, source) if x)
-        if book.import_variant:
-            sub = f"Вариант {book.import_variant} · {sub}".rstrip(" ·")
+        variant = book.archive_variant_number or book.import_variant
+        if variant:
+            sub = f"Вариант {variant} · {sub}".rstrip(" ·")
         self.sub = ElidedLabel(sub or Path(book.path).name)
         self.sub.setToolTip(sub)
         self.sub.setProperty("muted", True)

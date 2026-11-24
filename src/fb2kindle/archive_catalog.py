@@ -22,6 +22,17 @@ UNKNOWN_AUTHOR = "Без автора"
 MAX_FB2 = 128 * 1024 * 1024
 
 
+def author_matches(author_key: str, query: str) -> bool:
+    """Части имени ищутся как начала слов в любом порядке."""
+    words = author_key.split()
+    parts = library.norm_words(query).split()
+    return bool(parts) and all(any(word.startswith(part) for word in words) for part in parts)
+
+
+def language_code(value: str) -> str:
+    return value.strip().casefold().replace("_", "-")
+
+
 @dataclass(frozen=True)
 class Variant:
     archive: str
@@ -48,7 +59,7 @@ class Catalog:
 
     def build(self, source: Path, *, refresh=False):
         stat = source.stat()
-        signature = f"2|{source.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+        signature = f"3|{source.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
         with closing(sqlite3.connect(self.path)) as db:
             db.execute("CREATE TABLE IF NOT EXISTS source (signature TEXT NOT NULL)")
             row = db.execute("SELECT signature FROM source").fetchone()
@@ -62,7 +73,7 @@ class Catalog:
                     archive TEXT, member TEXT, title TEXT, title_key TEXT, language TEXT,
                     series TEXT, number TEXT, added TEXT, identifier TEXT,
                     PRIMARY KEY (archive, member))""")
-                db.execute("CREATE TABLE authors (key TEXT PRIMARY KEY, name TEXT, search TEXT)")
+                db.execute("CREATE TABLE authors (key TEXT PRIMARY KEY, name TEXT, search TEXT, folder TEXT)")
                 db.execute("""CREATE TABLE author_books (
                     author TEXT, archive TEXT, member TEXT,
                     PRIMARY KEY(author, archive, member))""")
@@ -109,24 +120,38 @@ class Catalog:
                                 row.get("SERIES", ""), row.get("SERNO", ""), row.get("DATE", ""),
                                 row.get("LIBID", "") or Path(member).stem))
                     for author in (row["AUTHOR"].strip(":").split(":") or [""]):
-                        name = " ".join(word.strip() for word in author.split(",") if word.strip()) or UNKNOWN_AUTHOR
+                        last, first, middle = ([word.strip() for word in author.split(",")] + ["", ""])[:3]
+                        given = " ".join(filter(None, (first, middle)))
+                        name = " ".join(filter(None, (given, last))) or UNKNOWN_AUTHOR
+                        folder = f"{last}, {given}" if " " in last and given else (
+                            " ".join(filter(None, (last, given))) or UNKNOWN_AUTHOR)
                         key = library.norm_words(name)
-                        search = name.casefold().replace("ё", "е")
-                        db.execute("INSERT OR IGNORE INTO authors VALUES (?, ?, ?)", (key, name, search))
+                        search = folder.casefold().replace("ё", "е")
+                        db.execute("INSERT OR IGNORE INTO authors VALUES (?, ?, ?, ?)", (key, name, search, folder))
                         db.execute("INSERT OR IGNORE INTO author_books VALUES (?, ?, ?)", (key, archive, member))
 
     def authors(self, query="", offset=0, limit=200):
-        query = query.strip().casefold().replace("ё", "е")
         title = library.norm_title(query)
-        author = library.norm_words(query)
         with closing(sqlite3.connect(self.path)) as db:
+            if not title:
+                return db.execute("SELECT key, name FROM authors ORDER BY search, key LIMIT ? OFFSET ?",
+                                  (limit, offset)).fetchall()
+            db.create_function("name_matches", 1, lambda key: author_matches(key, query), deterministic=True)
             return db.execute("""SELECT a.key, a.name FROM authors a
-                WHERE ? = '' OR instr(a.search, ?) OR instr(a.key, ?)
-                   OR (? != '' AND a.key IN (
-                       SELECT x.author FROM books b JOIN author_books x USING (archive, member)
-                       WHERE instr(b.title_key, ?)))
-                ORDER BY a.search, a.key LIMIT ? OFFSET ?""",
-                (query, query, author or query, title, title, limit, offset)).fetchall()
+                WHERE name_matches(a.key) OR a.key IN (
+                    SELECT x.author FROM books b JOIN author_books x USING (archive, member)
+                    WHERE instr(b.title_key, ?))
+                ORDER BY name_matches(a.key) DESC, a.search, a.key LIMIT ? OFFSET ?""",
+                (title, limit, offset)).fetchall()
+
+    def languages(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            return {language_code(value) for value, in db.execute("SELECT DISTINCT language FROM books")}
+
+    def author_folder(self, author):
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute("SELECT folder FROM authors WHERE key = ?", (author,)).fetchone()
+            return row[0] if row else UNKNOWN_AUTHOR
 
     def books(self, author):
         with closing(sqlite3.connect(self.path)) as db:
@@ -159,6 +184,11 @@ def member_info(archive, variant):
     if info.is_dir() or info.file_size > MAX_FB2:
         raise ValueError(f"Недопустимый размер FB2: {variant.member}")
     return info
+
+
+def read_cover(archives, variant):
+    with ZipFile(archive_path(archives, variant)) as archive:
+        return core.cover_from_fb2(archive.read(member_info(archive, variant)))
 
 
 def metadata(archive, info):
@@ -197,7 +227,12 @@ def local_candidates(groups, author, root):
                 continue
             if book.error:
                 continue
-            titles.setdefault(library.norm_title(book.display_title), []).append(book.path)
+            keys = {library.norm_title(book.display_title)}
+            if not book.import_variant:
+                stem = core.ARCHIVE_VARIANT_SUFFIX.sub("", core.stem_of(book.path))
+                keys.add(library.norm_title(stem))
+            for key in keys:
+                titles.setdefault(key, []).append(book.path)
             if book.import_variant:
                 imported.setdefault(book.import_variant, []).append(book.path)
             try:
@@ -267,7 +302,45 @@ def match_variants(variants, titles, imported, archives):
     return matched
 
 
-def import_variants(variants, root, folder, archives):
+def place_variant(temporary, folder, variant, size, occupied_titles):
+    base = core.safe_name(variant.title, max_len=130)
+    base_key = base.casefold()
+    occupied = set()
+    same_work = []
+    for path in folder.iterdir():
+        if not path.name.casefold().endswith(core.BOOK_SUFFIXES):
+            continue
+        stem = core.stem_of(path)
+        normal = core.ARCHIVE_VARIANT_SUFFIX.sub("", stem).casefold()
+        if normal == base_key or stem.casefold().endswith(f" [inpx-{variant.token}]"):
+            same_work.append(path)
+            occupied.add(stem.casefold())
+    if same_work:
+        expected = fingerprint(temporary, size)
+        for existing in same_work:
+            try:
+                duplicate = fingerprint(existing, size) == expected
+            except (OSError, ValueError, RuntimeError, BadZipFile):
+                continue
+            if duplicate:
+                raise FileExistsError("Этот вариант уже сохранён.")
+    number = 2 if library.norm_title(variant.title) in occupied_titles else 1
+    while True:
+        stem = base if number == 1 else f"{base} (вариант {number})"
+        path = folder / (stem + ".fb2")
+        if stem.casefold() not in occupied:
+            try:
+                if core.IS_WINDOWS:
+                    temporary.rename(path)  # Windows не заменяет существующий файл.
+                else:
+                    os.link(temporary, path)
+                return path
+            except FileExistsError:
+                pass
+        number += 1
+
+
+def import_variants(variants, root, folder, archives, occupied_titles=()):
     if not folder.resolve().is_relative_to(root.resolve()):
         raise ValueError("Папка автора находится за пределами библиотеки.")
     folder.mkdir(exist_ok=True)
@@ -282,18 +355,13 @@ def import_variants(variants, root, folder, archives):
                 for variant in entries:
                     try:
                         info = member_info(archive, variant)
-                        suffix = f" [INPX-{variant.token}]"
-                        path = folder / (core.safe_name(variant.title, max_len=112) + suffix + ".fb2")
                         with tempfile.NamedTemporaryFile(dir=folder, prefix=".fb2-import-", delete=False) as output:
                             temporary = Path(output.name)
                             try:
                                 with archive.open(info) as source:
                                     shutil.copyfileobj(source, output)
                                 output.close()
-                                if core.IS_WINDOWS:
-                                    temporary.rename(path)  # Windows не заменяет существующий файл.
-                                else:
-                                    os.link(temporary, path)
+                                path = place_variant(temporary, folder, variant, info.file_size, occupied_titles)
                             finally:
                                 output.close()
                                 temporary.unlink(missing_ok=True)
